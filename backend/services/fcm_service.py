@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from models.reminder import ReminderPayload
+from db_models.reminder import ReminderPayload
 
 logger = logging.getLogger(__name__)
 

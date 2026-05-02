@@ -1,0 +1,5 @@
+# Optional: dementia_action_subsystem (YOLO pose + Keras LSTM frame endpoint).
+# Install when using POST /api/dementia-action/analyze-frame:
+#   pip install -r requirements-dementia-action.txt
+ultralytics>=8.0.0
+tensorflow>=2.16.0

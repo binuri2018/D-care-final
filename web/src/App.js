@@ -8,6 +8,7 @@ import { useOutdoorAckSync } from "./hooks/useOutdoorAckSync";
 import Reminders from "./pages/Reminders";
 import Analytics from "./pages/Analytics";
 import MemoryAid from "./pages/MemoryAid";
+import DementiaAction from "./pages/DementiaAction";
 import { getMode, setMode } from "./services/modeApi";
 import "./App.css";
 
@@ -36,6 +37,9 @@ function Layout({
           </NavLink>
           <NavLink to="/memory" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
             <span>🧠</span> Memory
+          </NavLink>
+          <NavLink to="/dementia-action" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+            <span>🛡️</span> Dementia action
           </NavLink>
         </div>
 
@@ -68,6 +72,7 @@ function Layout({
           />
           <Route path="/analytics" element={<Analytics reminders={reminders} />} />
           <Route path="/memory" element={<MemoryAid />} />
+          <Route path="/dementia-action" element={<DementiaAction />} />
         </Routes>
       </main>
     </div>

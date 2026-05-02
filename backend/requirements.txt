@@ -12,3 +12,6 @@ resemblyzer
 torch
 librosa
 soundfile
+
+# Dementia action monitoring (YOLO pose + LSTM + live sessions on /api/dementia-action/*)
+-r requirements-dementia-action.txt

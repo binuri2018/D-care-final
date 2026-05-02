@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 import logging
 
-from models.reminder import (
+from db_models.reminder import (
     MobileTokenRegisterRequest,
     MobileTokenRegisterResponse,
     ReminderAckRequest,

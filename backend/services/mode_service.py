@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import logging
 from typing import Any, Dict
 
-from models.reminder import AutoModeSettingEnum, ModeEnum, ModeSourceEnum, ModeUpdateRequest
+from db_models.reminder import AutoModeSettingEnum, ModeEnum, ModeSourceEnum, ModeUpdateRequest
 from storage.state_store import StateStore
 
 

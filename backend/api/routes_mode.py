@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from models.reminder import ModeStateResponse, ModeUpdateRequest
+from db_models.reminder import ModeStateResponse, ModeUpdateRequest
 from services.container import mode_service
 
 router = APIRouter(tags=["mode"])

@@ -69,6 +69,9 @@ backend/memory_data/
 # Server runtime state (FCM tokens, device ids — never commit)
 backend/storage/state.json
 
+# Dementia action incident exports (snapshots, clips, json)
+backend/storage/dementia_action_incidents/
+
 # ── Node / React (web/) ───────────────────────────────────────────
 web/node_modules/
 web/build/
@@ -109,6 +112,7 @@ logs/
 *.7z
 
 # ── ML / local model weights (often large) ───────────────────────
+# Default bundle dir: backend/assets/dementia_action/ (see README.txt there).
 .cache/
 *.pt
 *.pth

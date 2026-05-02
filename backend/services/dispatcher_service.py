@@ -2,7 +2,7 @@ from datetime import datetime
 import logging
 from typing import Any, Dict, List, Optional
 
-from models.reminder import ModeEnum, ReminderPayload, ReminderSendRequest
+from db_models.reminder import ModeEnum, ReminderPayload, ReminderSendRequest
 from services.fcm_service import FcmService
 from services.mode_service import ModeService
 from storage.state_store import StateStore
