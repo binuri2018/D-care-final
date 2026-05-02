@@ -111,7 +111,10 @@ logs/
 *.rar
 *.7z
 
-# ── ML / local model weights (often large) ───────────────────────
+# ── Root cache ────────────────────────────────────────────────────
+.pytest_cache/
+
+# ── ML / local model weights (often large) ───────────────────────────
 # Default bundle dir: backend/assets/dementia_action/ (see README.txt there).
 .cache/
 *.pt

@@ -1,17 +1,13 @@
-# mobile_flutter
+# Memory Aid — mobile (Flutter)
 
-A new Flutter project.
+Part of the **Memory Aid** monorepo. See the repository root **[README.md](../README.md)** for backend setup, web app, and architecture notes ([`docs/STRUCTURE.md`](../docs/STRUCTURE.md)).
 
-## Getting Started
+## Run
 
-This project is a starting point for a Flutter application.
+```bash
+cd mobile_flutter
+flutter pub get
+flutter run
+```
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Configure Firebase and API base URLs per your environment (see `lib/` and platform-specific config).

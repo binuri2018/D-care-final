@@ -15,3 +15,6 @@ soundfile
 
 # Dementia action monitoring (YOLO pose + LSTM + live sessions on /api/dementia-action/*)
 -r requirements-dementia-action.txt
+
+# Cognitive screening prototype (/api/predict, /api/start-session, MRI, confusion frame)
+-r requirements-cognitive-screening.txt

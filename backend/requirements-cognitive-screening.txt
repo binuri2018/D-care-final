@@ -1,0 +1,7 @@
+# Cognitive & dementia-risk screening — `backend/cognitive_screening/` (mounted from `main.py`).
+# Core paths use pandas/sklearn; optional MRI (TensorFlow) / confusion (ultralytics) in extras.
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+xgboost>=2.0
+pymongo>=4.6

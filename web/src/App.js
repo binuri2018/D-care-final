@@ -9,8 +9,15 @@ import Reminders from "./pages/Reminders";
 import Analytics from "./pages/Analytics";
 import MemoryAid from "./pages/MemoryAid";
 import DementiaAction from "./pages/DementiaAction";
+import CognitiveScreeningShell from "./cognitive-screening/CognitiveScreeningShell";
+import CognitiveScreeningHome from "./cognitive-screening/CognitiveScreeningHome";
+import ScreeningPatientInfo from "./cognitive-screening/pages/PatientInfo";
+import ScreeningMmseTest from "./cognitive-screening/pages/MmseTest";
+import ScreeningAdvancedTest from "./cognitive-screening/pages/AdvancedTest";
+import ScreeningDashboard from "./cognitive-screening/pages/Dashboard";
 import { getMode, setMode } from "./services/modeApi";
 import "./App.css";
+import "./cognitive-screening/styles.css";
 
 function Layout({
   reminders,
@@ -37,6 +44,9 @@ function Layout({
           </NavLink>
           <NavLink to="/memory" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
             <span>🧠</span> Memory
+          </NavLink>
+          <NavLink to="/screening" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+            <span>🧪</span> Cognitive screening
           </NavLink>
           <NavLink to="/dementia-action" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
             <span>🛡️</span> Dementia action
@@ -73,6 +83,13 @@ function Layout({
           <Route path="/analytics" element={<Analytics reminders={reminders} />} />
           <Route path="/memory" element={<MemoryAid />} />
           <Route path="/dementia-action" element={<DementiaAction />} />
+          <Route path="/screening" element={<CognitiveScreeningShell />}>
+            <Route index element={<CognitiveScreeningHome />} />
+            <Route path="patient" element={<ScreeningPatientInfo />} />
+            <Route path="test" element={<ScreeningMmseTest />} />
+            <Route path="test-advanced" element={<ScreeningAdvancedTest />} />
+            <Route path="results" element={<ScreeningDashboard />} />
+          </Route>
         </Routes>
       </main>
     </div>
