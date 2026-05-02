@@ -1,0 +1,115 @@
+# memory_aid — monorepo (Python backend + React web + Flutter)
+
+# ── OS ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.stackdump
+
+# ── IDE / editors ──────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# ── Secrets & environment ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.p12
+*.keystore
+*.jks
+credentials.json
+*firebase-adminsdk*.json
+firebase-adminsdk*.json
+serviceAccount*.json
+google-services.json.local
+GoogleService-Info.plist.local
+secrets/
+*.secret
+
+# ── Python (backend/) ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+backend/.venv/
+backend/venv/
+backend/env/
+*.egg-info/
+.eggs/
+dist/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
+.hypothesis/
+nosetests.xml
+
+# Runtime / heavy local data (recreated by app; keep memory_seed/ for samples)
+backend/memory_data/
+
+# Server runtime state (FCM tokens, device ids — never commit)
+backend/storage/state.json
+
+# ── Node / React (web/) ───────────────────────────────────────────
+web/node_modules/
+web/build/
+web/coverage/
+web/.env.local
+web/.env.development.local
+web/.env.test.local
+web/.env.production.local
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+
+# ── Flutter (mobile_flutter/) ─────────────────────────────────────
+# See also mobile_flutter/.gitignore and mobile_flutter/{android,ios,...}/.gitignore
+mobile_flutter/.dart_tool/
+mobile_flutter/build/
+mobile_flutter/.flutter-plugins-dependencies
+mobile_flutter/android/.gradle/
+mobile_flutter/android/captures/
+mobile_flutter/android/local.properties
+mobile_flutter/android/key.properties
+
+# ── Logs & dumps ──────────────────────────────────────────────────
+logs/
+*.log
+*.dump
+*.sqlite
+*.sqlite3
+
+# ── Archives (often accidental check-ins) ─────────────────────────
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# ── ML / local model weights (often large) ───────────────────────
+.cache/
+*.pt
+*.pth
+*.onnx

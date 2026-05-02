@@ -1,0 +1,120 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Exact alarm scheduling (Android 12+). Do not add USE_EXACT_ALARM here:
+         that permission is auto-granted only for core alarm/calendar/timer apps
+         and hides this app from Settings → Apps → Special access →
+         Alarms & reminders on many devices, breaking the normal grant flow. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required so AndroidNotificationDetails(fullScreenIntent: true) can pop
+         a heads-up alarm UI over the lock screen. Without this permission
+         Android silently downgrades fullScreenIntent to a normal heads-up. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Required so WorkManager and AndroidAlarmManager can keep firing while
+         the app is fully closed. Without this, Samsung/Xiaomi/Huawei OEM
+         battery optimization will skip our 15-minute periodic safety net,
+         and reminders created while the app is killed will not fire at the
+         scheduled time.
+         The matching `Permission.ignoreBatteryOptimizations.request()` call
+         in OutdoorAlarmService prompts the user to whitelist the app the
+         first time the home screen loads. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Foreground service so OutdoorReminderForegroundService can run a
+         persistent low-importance notification that keeps the app process
+         alive on Samsung One UI / Xiaomi MIUI / Huawei EMUI. Without this
+         the OS puts the app to sleep after first push and the FCM
+         background handler never runs again — that was the user's
+         "first works, second never arrives" symptom. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ requires an explicit foreground-service-type permission
+         to match the type declared on the <service> below. Our service
+         exists to keep network/FCM-driven sync responsive, so dataSync is
+         the correct type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- HTTP to dev backend (FastAPI on LAN or 10.0.2.2). Use HTTPS in production. -->
+    <application
+        android:label="mobile_flutter"
+        android:name=".OutdoorReminderApplication"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+        <!-- Persistent foreground service that keeps the Dart isolate alive
+             so FCM push delivery, AlarmManager callbacks and the local
+             notification (with Done action) all fire on time even when the
+             app's main UI is in the background or the user has swiped it
+             from recents. See OutdoorReminderForegroundService.kt for the
+             full rationale. -->
+        <service
+            android:name=".OutdoorReminderForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <!-- Process-free restart of the FGS after reboot / OTA so FCM + local
+             alarms are not orphaned until the user opens the app. -->
+        <receiver
+            android:name=".BootCompletedReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Required so package:speech_to_text can find a speech recognition service on Android 11+ -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <!-- Required so package:flutter_tts can find a TTS engine on Android 11+ -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+</manifest>

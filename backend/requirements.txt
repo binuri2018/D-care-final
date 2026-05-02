@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+firebase-admin
+python-multipart
+numpy
+opencv-python-headless
+Pillow
+scipy
+face-recognition
+resemblyzer
+torch
+librosa
+soundfile
