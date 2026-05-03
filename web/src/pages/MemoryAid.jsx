@@ -239,6 +239,8 @@ export default function MemoryAid() {
   const identifiedRef = useRef(new Set());
   const [detectedList, setDetectedList] = useState([]);
   const [memoryLogPerson, setMemoryLogPerson] = useState(null);
+  const [memorySlideshowIndex, setMemorySlideshowIndex] = useState(0);
+  const memorySlideTimeoutRef = useRef(null);
 
   const [identifyBusy, setIdentifyBusy] = useState(false);
   const [identifyPhase, setIdentifyPhase] = useState(null);
@@ -510,6 +512,7 @@ export default function MemoryAid() {
       await memorySaveMemories(registerName.trim(), registerDesc, extraPhotos);
       toast.success("Memories and photos saved");
       setExtraPhotos([]);
+      setTab("identify");
     } catch (e) {
       toast.error(e.message);
     }
@@ -611,6 +614,62 @@ export default function MemoryAid() {
       toast.error("Could not load profile");
     }
   };
+
+  const memoryPhotoUrls = memoryLogPerson?.photo_urls || [];
+
+  useEffect(() => {
+    if (!memoryLogPerson?.name) return undefined;
+    setMemorySlideshowIndex(0);
+    const len = (memoryLogPerson.photo_urls || []).length;
+    if (len <= 1) return undefined;
+    let cancelled = false;
+    const scheduleAdvance = () => {
+      if (memorySlideTimeoutRef.current) {
+        window.clearTimeout(memorySlideTimeoutRef.current);
+        memorySlideTimeoutRef.current = null;
+      }
+      if (cancelled) return;
+      const ms = 1000 + Math.random() * 500;
+      memorySlideTimeoutRef.current = window.setTimeout(() => {
+        memorySlideTimeoutRef.current = null;
+        if (cancelled) return;
+        setMemorySlideshowIndex((i) => (i + 1) % len);
+        scheduleAdvance();
+      }, ms);
+    };
+    scheduleAdvance();
+    return () => {
+      cancelled = true;
+      if (memorySlideTimeoutRef.current) {
+        window.clearTimeout(memorySlideTimeoutRef.current);
+        memorySlideTimeoutRef.current = null;
+      }
+    };
+  }, [memoryLogPerson]);
+
+  useEffect(() => {
+    if (!memoryLogPerson?.name) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setMemoryLogPerson(null);
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [memoryLogPerson?.name]);
+
+  const closeMemoryReveal = () => {
+    setMemoryLogPerson(null);
+    setMemorySlideshowIndex(0);
+  };
+
+  const memorySlideUrl =
+    memoryPhotoUrls.length > 0
+      ? memoryPhotoUrls[Math.min(memorySlideshowIndex, memoryPhotoUrls.length - 1)]
+      : null;
 
   return (
     <div className="memory-aid memory-aid-wide memory-recognition-page">
@@ -742,34 +801,6 @@ export default function MemoryAid() {
             </aside>
           </div>
 
-          {memoryLogPerson?.name && (
-            <section className="memory-log-panel card-block">
-              <div className="memory-log-head">
-                <h2>{memoryLogPerson.name}</h2>
-                <button type="button" onClick={() => setMemoryLogPerson(null)}>
-                  Close
-                </button>
-              </div>
-              <div className="memory-log-cols">
-                <div>
-                  <h3>Notes</h3>
-                  <p>{memoryLogPerson.description?.trim() || "—"}</p>
-                </div>
-                <div>
-                  <h3>Photos</h3>
-                  <div className="memory-gallery">
-                    {(memoryLogPerson.photo_urls || []).length ? (
-                      memoryLogPerson.photo_urls.map((u) => (
-                        <img key={u} src={memoryPhotoSrc(u)} alt="" className="memory-thumb" />
-                      ))
-                    ) : (
-                      <p className="muted">No photos</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
         </>
       )}
 
@@ -848,6 +879,53 @@ export default function MemoryAid() {
             Save notes &amp; photos
           </button>
         </section>
+      )}
+
+      {memoryLogPerson?.name && (
+        <div
+          className="memory-reveal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="memory-reveal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeMemoryReveal();
+          }}
+        >
+          <div className="memory-reveal-dialog">
+            <header className="memory-reveal-head">
+              <h2 id="memory-reveal-title">{memoryLogPerson.name}</h2>
+              <button type="button" className="memory-reveal-close" onClick={closeMemoryReveal}>
+                Close
+              </button>
+            </header>
+            <div className="memory-reveal-stage">
+              {memorySlideUrl ? (
+                <>
+                  <img
+                    key={memorySlideUrl}
+                    src={memoryPhotoSrc(memorySlideUrl)}
+                    alt=""
+                    className="memory-reveal-img"
+                  />
+                  {memoryPhotoUrls.length > 1 && (
+                    <p className="memory-reveal-slide-meta" aria-live="polite">
+                      Photo {Math.min(memorySlideshowIndex, memoryPhotoUrls.length - 1) + 1} of{" "}
+                      {memoryPhotoUrls.length}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="memory-reveal-empty">No photos for this memory</div>
+              )}
+            </div>
+            <div className="memory-reveal-note">
+              <h3 className="memory-reveal-note-label">Notes</h3>
+              <p className="memory-reveal-note-body">
+                {memoryLogPerson.description?.trim() || "No notes saved for this person."}
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
