@@ -1,5 +1,6 @@
 import { Box } from '@mui/material';
 import type { ReactNode } from 'react';
+import { dcColors } from '../theme.ts';
 
 /** Fixed “device” size (CSS px) — same on every route when ?demo=1 */
 export const DEMO_PHONE_WIDTH = 300;
@@ -12,7 +13,7 @@ export function DemoPhoneFrame({ children }: { children: ReactNode }) {
       sx={{
         minHeight: '100vh',
         width: '100%',
-        bgcolor: '#141414',
+        bgcolor: dcColors.bg,
         boxSizing: 'border-box',
         py: { xs: 2, sm: 3 },
         px: { xs: 1, sm: 2 },

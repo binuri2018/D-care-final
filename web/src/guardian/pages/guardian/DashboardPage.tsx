@@ -234,7 +234,7 @@ export function DashboardPage() {
                 <XAxis dataKey="name" hide />
                 <YAxis domain={[0, 1]} width={36} />
                 <Tooltip />
-                <Line type="monotone" dataKey="p" stroke="#0EA5E9" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="p" stroke="#1a6bb8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </Box>

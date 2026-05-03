@@ -83,7 +83,7 @@ function Layout({
               `nav-link ${isActive || guardianActive ? "active" : ""}`
             }
           >
-            <span>👪</span> Dementia guardian
+            <span>👪</span> D-care Guardian
           </NavLink>
         </div>
 

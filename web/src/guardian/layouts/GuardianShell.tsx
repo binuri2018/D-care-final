@@ -95,13 +95,7 @@ export function GuardianShell() {
               component={NavLink}
               to={item.to}
               end={item.end}
-              sx={{
-                '&.active': {
-                  bgcolor: 'primary.main',
-                  color: 'primary.contrastText',
-                  '& .MuiListItemIcon-root': { color: 'inherit' },
-                },
-              }}
+              sx={{ borderRadius: 1.5 }}
             >
               <ListItemIcon sx={{ minWidth: 40 }}>
                 <item.icon fontSize="small" />
@@ -146,8 +140,8 @@ export function GuardianShell() {
           }}
         >
           <Toolbar variant="dense" disableGutters sx={{ px: 1.5, gap: 0.5 }}>
-            <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 700, fontSize: '1rem', ml: 0.5 }}>
-              Dementia Guardian
+            <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 700, fontSize: '1rem', ml: 0.5, color: 'primary.main' }}>
+              D-care · Guardian
             </Typography>
             <IconButton color="inherit" size="small" onClick={(e) => setMoreAnchor(e.currentTarget)} aria-label="More actions">
               <MoreVertIcon />
@@ -209,7 +203,7 @@ export function GuardianShell() {
           <Outlet />
         </Box>
 
-        <Paper square elevation={8} sx={{ flexShrink: 0, width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
+        <Paper square elevation={0} sx={{ flexShrink: 0, width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
           <BottomNavigation
             showLabels
             value={mobileNavValue}
@@ -238,8 +232,8 @@ export function GuardianShell() {
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default', width: '100%', overflowX: 'hidden' }}>
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1, width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
         <Toolbar>
-          <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 700 }}>
-            Dementia Guardian
+          <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 700, color: 'primary.main' }}>
+            D-care · Guardian
           </Typography>
           <IconButton
             color="inherit"
