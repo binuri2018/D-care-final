@@ -82,6 +82,8 @@ def save_action_incident(
         "metrics": metrics,
         "snapshot_path": str(snapshot_path.resolve()),
         "clip_path": str(clip_path.resolve()),
+        "snapshot_url": f"/api/dementia-action/incident-asset/{incident_id}/snapshot",
+        "clip_url": f"/api/dementia-action/incident-asset/{incident_id}/clip",
     }
     metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -115,11 +117,22 @@ def save_fallback_incident(
 def _metadata_to_row(meta: dict[str, Any]) -> dict[str, Any]:
     label = meta.get("label", ACTION_INCIDENT_LABEL)
     snap = meta.get("snapshot_path", "")
+    iid = meta.get("id", "unknown")
     meta_path = ""
     if snap:
         meta_path = str(Path(snap).with_suffix(".json"))
+    snap_url = meta.get("snapshot_url") or (
+        f"/api/dementia-action/incident-asset/{iid}/snapshot"
+        if iid and iid != "unknown"
+        else ""
+    )
+    clip_url = meta.get("clip_url") or (
+        f"/api/dementia-action/incident-asset/{iid}/clip"
+        if iid and iid != "unknown"
+        else ""
+    )
     return {
-        "Id": meta.get("id", "unknown"),
+        "Id": iid,
         "Time": meta.get("display_time", ""),
         "Severity": meta.get("severity", "High"),
         "BehaviorType": meta.get("behavior_type", meta.get("detected_action", "")),
@@ -131,12 +144,15 @@ def _metadata_to_row(meta: dict[str, Any]) -> dict[str, Any]:
         "SnapshotPath": snap,
         "ClipPath": meta.get("clip_path", ""),
         "MetadataPath": meta_path,
+        "SnapshotUrl": snap_url,
+        "ClipUrl": clip_url,
     }
 
 
 def _row_from_legacy(meta: dict[str, Any]) -> dict[str, Any]:
+    iid = meta.get("id", "legacy")
     return {
-        "Id": meta.get("id", "legacy"),
+        "Id": iid,
         "Time": meta.get("display_time", ""),
         "Severity": "High",
         "BehaviorType": meta.get("detected_action", "Fall Down"),
@@ -148,6 +164,8 @@ def _row_from_legacy(meta: dict[str, Any]) -> dict[str, Any]:
         "SnapshotPath": meta.get("snapshot_path", ""),
         "ClipPath": meta.get("clip_path", ""),
         "MetadataPath": "",
+        "SnapshotUrl": f"/api/dementia-action/incident-asset/{iid}/snapshot",
+        "ClipUrl": f"/api/dementia-action/incident-asset/{iid}/clip",
     }
 
 

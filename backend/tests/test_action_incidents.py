@@ -150,6 +150,8 @@ class ActionIncidentPersistenceTests(unittest.TestCase):
         self.assertEqual(incident["Action"], "Walking")
         self.assertEqual(incident["Confidence"], "0.88")
         self.assertEqual(incident["Metrics"], metrics)
+        self.assertIn("SnapshotUrl", incident)
+        self.assertIn("/api/dementia-action/incident-asset/", incident["SnapshotUrl"])
 
         snapshot_path = Path(incident["SnapshotPath"])
         clip_path = Path(incident["ClipPath"])
@@ -167,6 +169,8 @@ class ActionIncidentPersistenceTests(unittest.TestCase):
         self.assertEqual(saved_metadata["severity"], "High")
         self.assertAlmostEqual(saved_metadata["confidence"], 0.88)
         self.assertEqual(saved_metadata["metrics"], metrics)
+        self.assertIn("snapshot_url", saved_metadata)
+        self.assertIn("/api/dementia-action/incident-asset/", saved_metadata["snapshot_url"])
 
     def test_load_recent_action_incidents_orders_newest_first(self):
         frames = make_frames()
@@ -751,13 +755,58 @@ class AbnormalCaptureGateTests(unittest.TestCase):
             behavior,
             pose_quality=pose_quality,
             confirmation_state=confirmation_state,
-            now=1005.0,
+            now=1003.0,
         )
 
         self.assertIsNone(first)
         self.assertIsNotNone(confirmed)
         self.assertEqual(confirmed["behavior_type"], "Exit-zone risk")
         self.assertIn("Confirmed", confirmed["reason"])
+
+    def test_fall_down_confirmation_is_short(self):
+        behavior = {
+            "risk": "High",
+            "reason": "rapid upright-to-lying transition",
+            "behavior_type": "Fall Down",
+            "walking_duration": 0.0,
+            "direction_change_count": 0,
+            "pacing_score": 0,
+            "sit_stand_repetition_count": 0,
+            "long_lying_after_fall": 0.0,
+            "exit_zone_time": 0.0,
+        }
+        pose_quality = {"reliable": True, "score": 0.84, "visible_count": 14}
+        confirmation_state = {}
+
+        first = app.build_incident_trigger(
+            "Fall Down",
+            0.91,
+            behavior,
+            pose_quality=pose_quality,
+            confirmation_state=confirmation_state,
+            now=1000.0,
+        )
+        too_soon = app.build_incident_trigger(
+            "Fall Down",
+            0.91,
+            behavior,
+            pose_quality=pose_quality,
+            confirmation_state=confirmation_state,
+            now=1000.79,
+        )
+        confirmed = app.build_incident_trigger(
+            "Fall Down",
+            0.91,
+            behavior,
+            pose_quality=pose_quality,
+            confirmation_state=confirmation_state,
+            now=1000.81,
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNone(too_soon)
+        self.assertIsNotNone(confirmed)
+        self.assertEqual(confirmed["behavior_type"], "Fall Down")
 
     def test_restlessness_requires_twenty_second_confirmation(self):
         behavior = {

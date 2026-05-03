@@ -6,7 +6,10 @@ import {
   deleteLiveSession,
   fetchAlertPreview,
   fetchDementiaActionHealth,
+  fetchDementiaAlerts,
+  fetchDementiaEvents,
   fetchDementiaIncidents,
+  postBrowserAlertAck,
   postLiveFrame,
   simulateRisk,
 } from "../services/dementiaActionApi";
@@ -14,6 +17,7 @@ import { getUserMediaErrorMessage } from "../utils/getUserMediaErrorMessage";
 import { drawPoseOverlay } from "../utils/poseOverlay";
 
 const LS_ALERTS = "dc_console_alerts_enabled";
+const ASSET_BASE = process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
 
 function countVisibleKeypoints(kpts) {
   if (!Array.isArray(kpts) || !kpts.length) return 0;
@@ -58,6 +62,10 @@ export default function DementiaAction() {
   const [tab, setTab] = useState("live");
   const [health, setHealth] = useState(null);
   const [incidents, setIncidents] = useState([]);
+  const [riskEvents, setRiskEvents] = useState([]);
+  const [alertLog, setAlertLog] = useState([]);
+  const [selectedIncident, setSelectedIncident] = useState(null);
+  const [soundManual, setSoundManual] = useState(false);
   const [apiErr, setApiErr] = useState("");
 
   const [cameraOn, setCameraOn] = useState(false);
@@ -82,6 +90,39 @@ export default function DementiaAction() {
   const modelWarnedRef = useRef(false);
   const analyzeTimerRef = useRef(null);
   const uploadVideoRef = useRef(null);
+  const lastBrowserAlertIdRef = useRef(null);
+
+  const playAlertBeep = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return false;
+      const ctx = new Ctx();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.frequency.value = 1000;
+      const now = ctx.currentTime;
+      const peak = 0.38;
+      const dur = 0.32;
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(peak, now + 0.02);
+      g.gain.linearRampToValueAtTime(0.0001, now + dur);
+      o.start(now);
+      o.stop(now + dur + 0.02);
+      setTimeout(() => {
+        try {
+          ctx.close();
+        } catch {
+          /* ignore */
+        }
+      }, 450);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   const refreshIncidents = useCallback(async () => {
     try {
@@ -91,6 +132,22 @@ export default function DementiaAction() {
       /* ignore */
     }
   }, []);
+
+  const refreshLogs = useCallback(async () => {
+    try {
+      const [ev, al] = await Promise.all([fetchDementiaEvents(), fetchDementiaAlerts()]);
+      setRiskEvents(ev.data || []);
+      setAlertLog(al.data || []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshLogs();
+    const t = setInterval(refreshLogs, 4000);
+    return () => clearInterval(t);
+  }, [refreshLogs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +268,7 @@ export default function DementiaAction() {
           if (data.incident_saved) {
             const row = data.incident_saved;
             const label = row.BehaviorType || row.behavior_type || "event";
+            const iid = row.Id;
             toast.success(`Incident saved on server: ${label}`, { duration: 5500 });
             if (data.caregiver_email_dispatch) {
               const d = data.caregiver_email_dispatch;
@@ -221,6 +279,31 @@ export default function DementiaAction() {
               }
             }
             refreshIncidents();
+            refreshLogs();
+            if (alertsEnabled && iid && lastBrowserAlertIdRef.current !== iid) {
+              lastBrowserAlertIdRef.current = iid;
+              const subject = `Dementia Care Alert — ${row.Severity}: ${label}`;
+              const bodyText = row.Reason || row.reason || "";
+              let browserOk = false;
+              if (Notification.permission === "granted") {
+                try {
+                  new Notification(subject, { body: bodyText, tag: iid });
+                  browserOk = true;
+                } catch {
+                  /* ignore */
+                }
+              }
+              const played = playAlertBeep();
+              setSoundManual(!played);
+              postBrowserAlertAck({
+                incidentId: iid,
+                behavior: row.BehaviorType || "",
+                severity: row.Severity || "",
+                ok: browserOk,
+              })
+                .then(() => refreshLogs())
+                .catch(() => {});
+            }
           }
         } else {
           data = await analyzeFrame(blob);
@@ -256,7 +339,7 @@ export default function DementiaAction() {
         }
       }
     },
-    [monitorExitZone, edgeThreshold, pollRisk, pushHistory, refreshIncidents]
+    [monitorExitZone, edgeThreshold, pollRisk, pushHistory, refreshIncidents, refreshLogs, alertsEnabled, playAlertBeep]
   );
 
   useEffect(() => {
@@ -316,7 +399,7 @@ export default function DementiaAction() {
       if (liveError === "models") stateLine = "State: Models missing";
       else if (liveError === "network") stateLine = "State: Offline";
       else if (srvVis < 6) stateLine = "State: Uncertain";
-      else if (riskSnap?.risk === "High") stateLine = "State: Elevated risk";
+      else if (riskSnap?.risk === "High" || riskSnap?.risk === "Medium") stateLine = "State: Elevated risk";
       else if (act !== "Unknown") stateLine = "State: Tracking";
       else stateLine = "State: Uncertain";
 
@@ -395,9 +478,19 @@ export default function DementiaAction() {
     toast.success("Cleared on-console history.", { duration: 2000 });
   };
 
-  const toggleAlerts = (on) => {
+  const toggleAlerts = async (on) => {
     setAlertsEnabled(on);
     localStorage.setItem(LS_ALERTS, on ? "1" : "0");
+    if (on && typeof Notification !== "undefined" && Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!on) {
+      lastBrowserAlertIdRef.current = null;
+    }
   };
 
   const testAlert = async () => {
@@ -526,7 +619,9 @@ export default function DementiaAction() {
           ? "State: could not reach analysis API"
           : poseVisible < 6
             ? "State: No reliable full-body pose"
-            : `State: ${action}`;
+            : riskSnap?.risk === "High" || riskSnap?.risk === "Medium"
+              ? `State: ${riskSnap.risk} — ${riskSnap.behavior_type || ""}`
+              : `State: ${action}`;
 
   const behaviorLine =
     riskSnap?.behavior_type && riskSnap?.risk !== "Normal"
@@ -700,13 +795,26 @@ export default function DementiaAction() {
           ) : (
             <ul className="dc-capture-list">
               {incidents.map((row) => (
-                <li key={row.Id} className="dc-capture-card">
+                <li
+                  key={row.Id}
+                  className="dc-capture-card dc-capture-card--click"
+                  onClick={() => setSelectedIncident(row)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedIncident(row);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
                   <div className="dc-capture-title">
                     {row.BehaviorType}{" "}
                     <span className="dc-badge">{row.Severity}</span>
                   </div>
                   <div className="dc-capture-meta">
                     {row.Time} — {row.Reason}
+                    <span className="dc-capture-hint"> · Open detail</span>
                     {row.Metrics && row.Metrics.pose_visible_keypoints != null && (
                       <>
                         {" "}
@@ -753,7 +861,9 @@ export default function DementiaAction() {
             <span className="dc-pill dc-pill-ok">
               {lastFrame?.incident_saved
                 ? "Incident saved — see Captures tab"
-                : riskSnap?.risk === "High"
+                : lastFrame?.incident_pending_until
+                  ? "Post-capture buffering (≈2s) after confirmed risk"
+                  : riskSnap?.risk === "High"
                   ? "High risk flagged — server confirmation + gate"
                   : "No abnormal capture without server incident save"}
             </span>
@@ -766,12 +876,87 @@ export default function DementiaAction() {
           ? "No person with a reliable full-body pose was detected."
           : riskSnap?.risk === "High"
             ? `Elevated risk: ${riskSnap.behavior_type} — ${riskSnap.reason}`
-            : "Pose OK — monitoring continues. Normal activity is not logged as an abnormal capture."}
+            : riskSnap?.risk === "Medium"
+              ? `Watch closely (${riskSnap.risk}): ${riskSnap.behavior_type} — ${riskSnap.reason}`
+              : "Pose OK — monitoring continues. Normal activity is not logged as an abnormal capture."}
       </div>
 
       <pre className="dc-log" aria-label="Technical log">
         {logLine}
       </pre>
+
+      <section className="dc-dash-tables" aria-label="Live behaviour and alert history">
+        <div className="dc-dash-col">
+          <h3 className="dc-subheading">Recent behaviour events</h3>
+          <p className="dc-muted dc-small-margin">
+            Medium / High risk only (server, deduped ≈10s). Latest 10.
+          </p>
+          <div className="dc-table-wrap">
+            <table className="dc-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Risk</th>
+                  <th>Action</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {riskEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="dc-table-empty">
+                      No medium/high events yet this session.
+                    </td>
+                  </tr>
+                ) : (
+                  riskEvents.map((ev, idx) => (
+                    <tr key={`${ev.timestamp}-${idx}`}>
+                      <td>{ev.time}</td>
+                      <td>{ev.risk}</td>
+                      <td>{ev.action}</td>
+                      <td className="dc-table-clamp">{ev.reason}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="dc-dash-col">
+          <h3 className="dc-subheading">Caregiver alert history</h3>
+          <p className="dc-muted dc-small-margin">Latest 8 dispatch rows (email + browser ack).</p>
+          <div className="dc-table-wrap">
+            <table className="dc-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Behaviour</th>
+                  <th>Severity</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alertLog.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="dc-table-empty">
+                      No alerts logged yet.
+                    </td>
+                  </tr>
+                ) : (
+                  alertLog.map((a, idx) => (
+                    <tr key={`${a.timestamp}-${idx}`}>
+                      <td>{a.time}</td>
+                      <td>{a.behavior}</td>
+                      <td>{a.severity}</td>
+                      <td className="dc-table-clamp">{a.status_message}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
       <section className="dc-alerts">
         <h2 className="dc-alerts-title">Caregiver alerts</h2>
@@ -787,6 +972,18 @@ export default function DementiaAction() {
           <button type="button" className="btn-secondary" onClick={testAlert}>
             Test alert
           </button>
+          {soundManual && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                const ok = playAlertBeep();
+                if (ok) setSoundManual(false);
+              }}
+            >
+              Play alert sound
+            </button>
+          )}
           <span className="dc-muted inline-hint">
             Uses browser notifications when allowed. Server email: set{" "}
             <code className="inline-code">DEMENTIA_CAREGIVER_EMAIL</code> (or{" "}
@@ -796,6 +993,67 @@ export default function DementiaAction() {
           </span>
         </div>
       </section>
+
+      {selectedIncident && (
+        <div
+          className="dc-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dc-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedIncident(null);
+          }}
+        >
+          <div className="dc-modal">
+            <div className="dc-modal-head">
+              <h3 id="dc-modal-title">{selectedIncident.BehaviorType || "Incident"}</h3>
+              <button type="button" className="btn-secondary" onClick={() => setSelectedIncident(null)}>
+                Close
+              </button>
+            </div>
+            <div className="dc-modal-body">
+              {selectedIncident.SnapshotUrl || selectedIncident.Id ? (
+                <img
+                  src={`${ASSET_BASE}${selectedIncident.SnapshotUrl || `/api/dementia-action/incident-asset/${selectedIncident.Id}/snapshot`}`}
+                  alt="Incident snapshot"
+                  className="dc-modal-img"
+                />
+              ) : null}
+              {selectedIncident.ClipUrl || selectedIncident.Id ? (
+                <video
+                  src={`${ASSET_BASE}${selectedIncident.ClipUrl || `/api/dementia-action/incident-asset/${selectedIncident.Id}/clip`}`}
+                  controls
+                  className="dc-modal-video"
+                >
+                  <track kind="captions" />
+                </video>
+              ) : null}
+              <dl className="dc-modal-dl">
+                <div>
+                  <dt>Time</dt>
+                  <dd>{selectedIncident.Time}</dd>
+                </div>
+                <div>
+                  <dt>Detected action</dt>
+                  <dd>{selectedIncident.Action}</dd>
+                </div>
+                <div>
+                  <dt>Confidence</dt>
+                  <dd>{selectedIncident.Confidence}</dd>
+                </div>
+                <div>
+                  <dt>Severity</dt>
+                  <dd>{selectedIncident.Severity}</dd>
+                </div>
+                <div className="dc-modal-dl-full">
+                  <dt>Reason</dt>
+                  <dd>{selectedIncident.Reason}</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

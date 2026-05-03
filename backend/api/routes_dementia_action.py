@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
+import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from dementia_action_subsystem import config as dac_config
@@ -14,6 +18,11 @@ from dementia_action_subsystem.alerts import (
     send_caregiver_email_alert,
 )
 from dementia_action_subsystem.incidents import load_recent_action_incidents
+from dementia_action_subsystem.live_logs import (
+    append_browser_alert_ack,
+    list_caregiver_alert_log,
+    list_live_risk_events,
+)
 from dementia_action_subsystem.live_session import (
     create_session,
     delete_session,
@@ -23,6 +32,8 @@ from dementia_action_subsystem.pose_engine import DementiaActionPoseEngine
 from dementia_action_subsystem.risk_analysis import analyze_wandering_risk
 
 router = APIRouter(tags=["dementia-action"])
+
+_INCIDENT_ID_RE = re.compile(r"^inc_[a-f0-9]{12}$")
 
 
 def _demo_incident_row_for_alert_preview() -> dict[str, Any]:
@@ -50,6 +61,8 @@ def _demo_incident_row_for_alert_preview() -> dict[str, Any]:
         "SnapshotPath": "",
         "ClipPath": "",
         "MetadataPath": "",
+        "SnapshotUrl": "",
+        "ClipUrl": "",
     }
 
 
@@ -79,6 +92,58 @@ def dementia_action_health():
 def list_incidents(limit: int = 50):
     rows = load_recent_action_incidents(limit=min(max(limit, 1), 200))
     return {"data": rows}
+
+
+@router.get("/dementia-action/events")
+def list_live_events():
+    return {"data": list_live_risk_events()}
+
+
+@router.get("/dementia-action/alerts")
+def list_alerts():
+    return {"data": list_caregiver_alert_log()}
+
+
+class BrowserAlertAckBody(BaseModel):
+    incident_id: str = ""
+    behavior: str = ""
+    severity: str = ""
+    ok: bool = True
+
+
+@router.post("/dementia-action/alerts/browser-ack")
+def browser_alert_ack(body: BrowserAlertAckBody):
+    if not body.incident_id or not _INCIDENT_ID_RE.match(body.incident_id):
+        raise HTTPException(400, "invalid incident_id")
+    row = append_browser_alert_ack(
+        ts=time.time(),
+        incident_id=body.incident_id,
+        behavior=body.behavior,
+        severity=body.severity,
+        ok=body.ok,
+    )
+    return {"ok": True, "row": row}
+
+
+@router.get("/dementia-action/incident-asset/{incident_id}/{kind}")
+def incident_asset(incident_id: str, kind: str):
+    if not _INCIDENT_ID_RE.match(incident_id):
+        raise HTTPException(404, "not found")
+    if kind not in ("snapshot", "clip"):
+        raise HTTPException(404, "not found")
+    root = Path(dac_config.ACTION_INCIDENT_DIR)
+    ext = ".jpg" if kind == "snapshot" else ".mp4"
+    path = (root / incident_id).with_suffix(ext)
+    try:
+        root_resolved = root.resolve()
+        path = path.resolve()
+        path.relative_to(root_resolved)
+    except (OSError, ValueError):
+        raise HTTPException(404, "not found") from None
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    media = "image/jpeg" if kind == "snapshot" else "video/mp4"
+    return FileResponse(path, media_type=media)
 
 
 @router.post("/dementia-action/risk/simulate")

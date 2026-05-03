@@ -12,8 +12,16 @@ from typing import Any
 import numpy as np
 
 from dementia_action_subsystem.alerts import send_caregiver_email_alert
+from dementia_action_subsystem.config import (
+    ACTION_INCIDENT_COOLDOWN_SECONDS,
+    INCIDENT_POST_CAPTURE_SECONDS,
+)
 from dementia_action_subsystem.incident_gate import build_incident_trigger
 from dementia_action_subsystem.incidents import save_action_incident
+from dementia_action_subsystem.live_logs import (
+    append_caregiver_alert_log,
+    append_live_risk_event,
+)
 from dementia_action_subsystem.pose_engine import DementiaActionPoseEngine
 from dementia_action_subsystem.pose_geometry import (
     choose_final_action,
@@ -100,9 +108,67 @@ class DementiaActionLiveSession:
         self.confirmation_state: dict[str, Any] = {}
         self.last_seen_ts: float = time.time()
         self._lock = threading.Lock()
+        self._pending_incident: dict[str, Any] | None = None
+        self._last_incident_ts: float | None = None
 
     def touch(self) -> None:
         self.last_seen_ts = time.time()
+
+    def _flush_pending_incident(self, ts: float, out: dict[str, Any]) -> None:
+        if self._pending_incident is None:
+            return
+        if ts < float(self._pending_incident["post_capture_until"]):
+            return
+        if not self.frame_buffer:
+            return
+        pend = self._pending_incident
+        self._pending_incident = None
+        tr = pend["trigger"]
+        risk_snap = pend["risk"]
+        pose_metrics = pend["pose_metrics"]
+        incident_row = save_action_incident(
+            list(self.frame_buffer),
+            self.frame_buffer[-1][1],
+            str(tr["detected_action"]),
+            float(tr["confidence"]),
+            str(tr["reason"]),
+            str(tr["behavior_type"]),
+            str(pend.get("severity", "High")),
+            _metrics_subset(risk_snap, pose_metrics),
+            now=ts,
+        )
+        self._last_incident_ts = ts
+        out["incident_saved"] = incident_row
+        recipient = (
+            os.environ.get("DEMENTIA_CAREGIVER_EMAIL")
+            or os.environ.get("CAREGIVER_ALERT_EMAIL")
+            or ""
+        ).strip()
+        if recipient:
+            try:
+                out["caregiver_email_dispatch"] = send_caregiver_email_alert(
+                    incident_row,
+                    recipient_email=recipient,
+                )
+            except Exception as e:
+                out["caregiver_email_dispatch"] = {
+                    "sent": False,
+                    "status": "error",
+                    "reason": str(e)[:300],
+                }
+        else:
+            out["caregiver_email_dispatch"] = {
+                "sent": False,
+                "status": "disabled",
+                "reason": "No recipient; browser alerts only.",
+            }
+        append_caregiver_alert_log(
+            ts=ts,
+            incident_id=str(incident_row.get("Id", "")),
+            behavior=str(incident_row.get("BehaviorType", "")),
+            severity=str(incident_row.get("Severity", "")),
+            email_dispatch=out.get("caregiver_email_dispatch"),
+        )
 
     def process_frame(
         self, frame_bgr: np.ndarray, *, use_exit_zone: bool, edge: float
@@ -127,6 +193,7 @@ class DementiaActionLiveSession:
             "fusion_reason": "",
             "risk": None,
             "incident_saved": None,
+            "incident_pending_until": None,
         }
 
         result = self.engine.process_frame(frame_bgr)
@@ -137,6 +204,18 @@ class DementiaActionLiveSession:
                 self.history, ts, ts, use_exit_zone, edge
             )
             out["pose_visible_keypoints"] = 0
+            append_live_risk_event(
+                ts,
+                str(out["risk"]["risk"]),
+                "Unknown",
+                str(out["risk"].get("reason", "")),
+            )
+            self.frame_buffer.append((ts, frame_bgr.copy()))
+            self._flush_pending_incident(ts, out)
+            if self._pending_incident is not None:
+                out["incident_pending_until"] = float(
+                    self._pending_incident["post_capture_until"]
+                )
             return self._jsonify_payload(out, kp, result)
 
         xy = kp
@@ -174,6 +253,18 @@ class DementiaActionLiveSession:
             self.history, ts, window_start, use_exit_zone, edge
         )
         out["risk"] = risk
+        append_live_risk_event(
+            ts,
+            str(risk["risk"]),
+            str(action_final),
+            str(risk.get("reason", "")),
+        )
+
+        self.frame_buffer.append((ts, frame_bgr.copy()))
+
+        self._flush_pending_incident(ts, out)
+
+        incident_row = out.get("incident_saved")
 
         trigger = build_incident_trigger(
             action_risk,
@@ -184,10 +275,15 @@ class DementiaActionLiveSession:
             ts,
         )
 
-        self.frame_buffer.append((ts, frame_bgr.copy()))
-
-        incident_row = None
-        if trigger is not None:
+        if (
+            incident_row is None
+            and self._pending_incident is None
+            and trigger is not None
+            and (
+                self._last_incident_ts is None
+                or (ts - self._last_incident_ts) >= ACTION_INCIDENT_COOLDOWN_SECONDS
+            )
+        ):
             pose_metrics = {
                 "pose_posture": geometry.get("posture"),
                 "pose_visible_keypoints": int(pose_q.get("visible_count", 0)),
@@ -195,32 +291,18 @@ class DementiaActionLiveSession:
                 "pose_quality_score": round(float(pose_q.get("score", 0.0)), 3),
                 "fusion_reason": (fusion_note or "")[:220],
             }
-            incident_row = save_action_incident(
-                list(self.frame_buffer),
-                self.frame_buffer[-1][1],
-                str(trigger["detected_action"]),
-                float(trigger["confidence"]),
-                str(trigger["reason"]),
-                str(trigger["behavior_type"]),
-                "High",
-                _metrics_subset(risk, pose_metrics),
-                now=ts,
+            self._pending_incident = {
+                "trigger": trigger,
+                "post_capture_until": ts + INCIDENT_POST_CAPTURE_SECONDS,
+                "risk": dict(risk),
+                "pose_metrics": pose_metrics,
+                "severity": "High",
+            }
+            out["incident_pending_until"] = float(self._pending_incident["post_capture_until"])
+        elif self._pending_incident is not None:
+            out["incident_pending_until"] = float(
+                self._pending_incident["post_capture_until"]
             )
-        if incident_row is not None:
-            out["incident_saved"] = incident_row
-            recipient = (os.environ.get("DEMENTIA_CAREGIVER_EMAIL") or os.environ.get("CAREGIVER_ALERT_EMAIL") or "").strip()
-            if recipient:
-                try:
-                    out["caregiver_email_dispatch"] = send_caregiver_email_alert(
-                        incident_row,
-                        recipient_email=recipient,
-                    )
-                except Exception as e:
-                    out["caregiver_email_dispatch"] = {
-                        "sent": False,
-                        "status": "error",
-                        "reason": str(e)[:300],
-                    }
 
         out["action"] = action_final
         out["confidence"] = conf_final

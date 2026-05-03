@@ -50,5 +50,43 @@ RISK_THRESHOLDS = {
     "lying_vertical_drop": 0.18,
 }
 
-HIGH_RISK_CONFIRMATION_SEC = 5.0
-RESTLESSNESS_CONFIRMATION_SEC = 20.0
+# Time to hold High-risk state before a capture can arm (per behavior class).
+FALL_CONFIRMATION_SEC = float(os.environ.get("DEMENTIA_ACTION_FALL_CONFIRM_SEC", "0.8"))
+PACING_WANDERING_CONFIRMATION_SEC = float(
+    os.environ.get("DEMENTIA_ACTION_PACING_CONFIRM_SEC", "3.0")
+)
+DEFAULT_HIGH_CONFIRMATION_SEC = float(
+    os.environ.get("DEMENTIA_ACTION_DEFAULT_CONFIRM_SEC", "5.0")
+)
+RESTLESSNESS_CONFIRMATION_SEC = float(
+    os.environ.get("DEMENTIA_ACTION_RESTLESSNESS_CONFIRM_SEC", "20.0")
+)
+
+# Kept for tests / imports expecting the old name (maps to default non-fall pacing bucket).
+HIGH_RISK_CONFIRMATION_SEC = DEFAULT_HIGH_CONFIRMATION_SEC
+
+ACTION_INCIDENT_COOLDOWN_SECONDS = float(
+    os.environ.get("DEMENTIA_ACTION_INCIDENT_COOLDOWN_SEC", "15.0")
+)
+INCIDENT_POST_CAPTURE_SECONDS = float(
+    os.environ.get("DEMENTIA_ACTION_POST_CAPTURE_SEC", "2.0")
+)
+
+LIVE_EVENT_DEDUP_SECONDS = float(os.environ.get("DEMENTIA_ACTION_EVENT_DEDUP_SEC", "10.0"))
+MAX_LIVE_RISK_EVENTS = int(os.environ.get("DEMENTIA_ACTION_MAX_LIVE_EVENTS", "10"))
+MAX_CAREGIVER_ALERT_LOG = int(os.environ.get("DEMENTIA_ACTION_MAX_ALERT_LOG", "8"))
+
+# Prolonged lying in this window is Medium risk (event log); sustained_lying_seconds is High.
+PROLONGED_LYING_MEDIUM_SECONDS = float(
+    os.environ.get("DEMENTIA_ACTION_PROLONGED_LYING_MEDIUM_SEC", "8.0")
+)
+
+
+def confirmation_seconds_for_behavior(behavior_type: str) -> float:
+    if behavior_type == "Fall Down":
+        return FALL_CONFIRMATION_SEC
+    if behavior_type in ("Pacing / wandering", "Exit-zone risk"):
+        return PACING_WANDERING_CONFIRMATION_SEC
+    if behavior_type == "Restlessness":
+        return RESTLESSNESS_CONFIRMATION_SEC
+    return DEFAULT_HIGH_CONFIRMATION_SEC

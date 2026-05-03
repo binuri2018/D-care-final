@@ -1049,7 +1049,179 @@ button.btn-secondary {
   padding: 12px 14px;
   white-space: pre-wrap;
   word-break: break-word;
-  margin-bottom: 28px;
+  margin-bottom: 16px;
+}
+
+.dc-dash-tables {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.dc-dash-col {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.dc-subheading {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.dc-small-margin {
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+}
+
+.dc-table-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.dc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.dc-table th,
+.dc-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.dc-table th {
+  font-weight: 600;
+  color: var(--text2);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dc-table-empty {
+  color: var(--text2);
+  font-style: italic;
+}
+
+.dc-table-clamp {
+  max-width: 220px;
+  word-break: break-word;
+}
+
+.dc-capture-card--click {
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.dc-capture-card--click:hover,
+.dc-capture-card--click:focus {
+  outline: none;
+  border-color: rgba(26, 107, 184, 0.35);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.dc-capture-hint {
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.dc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 43, 66, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.dc-modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  max-width: 720px;
+  width: 100%;
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+
+.dc-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dc-modal-head h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.dc-modal-body {
+  padding: 16px 18px;
+}
+
+.dc-modal-img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-bottom: 12px;
+  background: var(--surface2);
+}
+
+.dc-modal-video {
+  width: 100%;
+  max-height: 280px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  background: #000;
+}
+
+.dc-modal-dl {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px 20px;
+  font-size: 0.9rem;
+}
+
+.dc-modal-dl dt {
+  font-weight: 600;
+  color: var(--text2);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.dc-modal-dl dd {
+  margin: 4px 0 0;
+  color: var(--text);
+}
+
+.dc-modal-dl-full {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .dc-dash-tables {
+    grid-template-columns: 1fr;
+  }
+  .dc-modal-dl {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dc-alerts { margin-top: 8px; }

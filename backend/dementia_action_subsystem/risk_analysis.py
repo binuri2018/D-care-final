@@ -7,6 +7,7 @@ from typing import Any
 
 from dementia_action_subsystem.config import (
     MIN_PACING_WALKING_DENSITY,
+    PROLONGED_LYING_MEDIUM_SECONDS,
     RISK_THRESHOLDS,
 )
 
@@ -160,6 +161,28 @@ def analyze_wandering_risk(
             risk_signals=risk_signals,
         )
 
+    sustained_threshold = float(RISK_THRESHOLDS["sustained_lying_seconds"])
+
+    if (
+        PROLONGED_LYING_MEDIUM_SECONDS > 0
+        and sustained_threshold > PROLONGED_LYING_MEDIUM_SECONDS
+        and lying_duration >= PROLONGED_LYING_MEDIUM_SECONDS
+        and lying_duration < sustained_threshold
+    ):
+        return _medium(
+            "Prolonged lying posture",
+            "lying posture sustained — approaching sustained-risk threshold",
+            direction_change_count=direction_change_count,
+            walking_duration=walking_duration,
+            exit_zone_time=exit_zone_time,
+            sit_stand_repetition_count=sit_stand_repetition_count,
+            long_lying_after_fall=long_lying_after_fall,
+            lying_duration=lying_duration,
+            pacing_score=pacing_score,
+            walking_density=walking_density,
+            risk_signals=risk_signals,
+        )
+
     if lying_duration >= RISK_THRESHOLDS["sustained_lying_seconds"]:
         return _high(
             "Sustained lying posture",
@@ -209,6 +232,10 @@ def _normal(**kwargs: Any) -> dict[str, Any]:
 
 def _high(behavior: str, reason: str, **kwargs: Any) -> dict[str, Any]:
     return _normal(**kwargs) | {"risk": "High", "behavior_type": behavior, "reason": reason}
+
+
+def _medium(behavior: str, reason: str, **kwargs: Any) -> dict[str, Any]:
+    return _normal(**kwargs) | {"risk": "Medium", "behavior_type": behavior, "reason": reason}
 
 
 def _count_direction_changes(recent: list[dict[str, Any]]) -> int:

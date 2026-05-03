@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dementia_action_subsystem.config import HIGH_RISK_CONFIRMATION_SEC, RESTLESSNESS_CONFIRMATION_SEC
+from dementia_action_subsystem.config import confirmation_seconds_for_behavior
 
 
 def build_incident_trigger(
@@ -22,11 +22,7 @@ def build_incident_trigger(
 
     btype = behavior.get("behavior_type", "")
     reason = behavior.get("reason", "")
-    required = (
-        RESTLESSNESS_CONFIRMATION_SEC
-        if btype == "Restlessness"
-        else HIGH_RISK_CONFIRMATION_SEC
-    )
+    required = confirmation_seconds_for_behavior(str(btype))
 
     key = f"high:{btype}"
     first_seen = confirmation_state.get(key)

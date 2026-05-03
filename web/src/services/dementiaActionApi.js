@@ -12,6 +12,38 @@ export async function fetchDementiaIncidents(limit = 50) {
   return r.json();
 }
 
+export async function fetchDementiaEvents() {
+  const r = await fetch(`${BACKEND_URL}/api/dementia-action/events`);
+  if (!r.ok) throw new Error(`events ${r.status}`);
+  return r.json();
+}
+
+export async function fetchDementiaAlerts() {
+  const r = await fetch(`${BACKEND_URL}/api/dementia-action/alerts`);
+  if (!r.ok) throw new Error(`alerts ${r.status}`);
+  return r.json();
+}
+
+export async function postBrowserAlertAck({
+  incidentId,
+  behavior = "",
+  severity = "",
+  ok = true,
+}) {
+  const r = await fetch(`${BACKEND_URL}/api/dementia-action/alerts/browser-ack`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      incident_id: incidentId,
+      behavior,
+      severity,
+      ok,
+    }),
+  });
+  if (!r.ok) throw new Error(`browser-ack ${r.status}`);
+  return r.json();
+}
+
 export async function fetchAlertPreview(incidentId = null) {
   const q = incidentId ? `?incident_id=${encodeURIComponent(incidentId)}` : "";
   const r = await fetch(`${BACKEND_URL}/api/dementia-action/alert-preview${q}`);
