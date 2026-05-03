@@ -1,0 +1,22 @@
+# Secrets
+server/.env
+mobile_app/.env
+
+# Large local datasets/artifacts (do not push to GitHub)
+MRI_Data_set/MRI_Data_set.zip
+MRI_Data_set/*.zip
+Clinical Model/archive.zip
+
+# Python/Notebook cache
+**/__pycache__/
+**/.ipynb_checkpoints/
+
+# Node
+server/node_modules/
+web_app/node_modules/
+web_app/dist/
+
+# Flutter / Dart
+mobile_app/.dart_tool/
+mobile_app/build/
+

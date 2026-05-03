@@ -253,6 +253,9 @@ export default function DementiaAction() {
               code === 404 ||
               /unknown or expired session|session_id/i.test(text);
             if (sessionLost) {
+              if (opts.ephemeralSession) {
+                throw err;
+              }
               const created = await createLiveSession();
               const newSid = created?.session_id;
               if (!newSid) throw err;
@@ -346,7 +349,9 @@ export default function DementiaAction() {
     if (!cameraOn) return undefined;
     analyzeTimerRef.current = setInterval(async () => {
       const blob = await captureBlob();
-      await processFrameBlob(blob);
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      await processFrameBlob(blob, { sessionId: sid });
     }, 450);
     return () => {
       if (analyzeTimerRef.current) {
@@ -538,18 +543,14 @@ export default function DementiaAction() {
       const f = inp.files?.[0];
       if (!f) return;
       if (f.type.startsWith("image/")) {
-        const prevSid = sessionIdRef.current;
+        let uploadSid = null;
         try {
           const created = await createLiveSession();
-          const sid = created.session_id;
-          if (!sid) throw new Error("no session_id");
-          sessionIdRef.current = sid;
-          await processFrameBlob(f);
+          uploadSid = created.session_id;
+          if (!uploadSid) throw new Error("no session_id");
+          await processFrameBlob(f, { sessionId: uploadSid, ephemeralSession: true });
         } finally {
-          if (sessionIdRef.current) {
-            await deleteLiveSession(sessionIdRef.current).catch(() => {});
-          }
-          sessionIdRef.current = prevSid;
+          if (uploadSid) await deleteLiveSession(uploadSid).catch(() => {});
         }
         toast.success("Image analyzed.", { duration: 2000 });
         return;
@@ -563,12 +564,11 @@ export default function DementiaAction() {
       v.src = url;
       v.muted = true;
       await v.play().catch(() => {});
-      const prevSid = sessionIdRef.current;
+      let uploadSid = null;
       try {
         const created = await createLiveSession();
-        const sid = created.session_id;
-        if (!sid) throw new Error("no session_id");
-        sessionIdRef.current = sid;
+        uploadSid = created.session_id;
+        if (!uploadSid) throw new Error("no session_id");
       } catch {
         URL.revokeObjectURL(url);
         toast.error("Could not start server live session.", { duration: 4000 });
@@ -579,8 +579,7 @@ export default function DementiaAction() {
         if (!v.videoWidth || v.paused || v.ended || n >= 90) {
           clearInterval(iv);
           URL.revokeObjectURL(url);
-          if (sessionIdRef.current) await deleteLiveSession(sessionIdRef.current).catch(() => {});
-          sessionIdRef.current = prevSid;
+          if (uploadSid) await deleteLiveSession(uploadSid).catch(() => {});
           toast.success(`Processed ${n} video frames.`, { duration: 2500 });
           return;
         }
@@ -592,7 +591,7 @@ export default function DementiaAction() {
         const blob = await new Promise((res) =>
           canvas.toBlob((b) => res(b), "image/jpeg", 0.82)
         );
-        await processFrameBlob(blob);
+        await processFrameBlob(blob, { sessionId: uploadSid, ephemeralSession: true });
       }, 480);
     };
     inp.click();

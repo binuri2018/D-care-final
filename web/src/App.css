@@ -92,6 +92,23 @@ body {
 /* Main */
 .main-content { flex: 1; overflow-y: auto; padding: 32px; }
 
+/* Dementia Guardian nested under sidebar: full main column, no extra padding */
+.main-content--guardian-host {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.main-content--guardian-host .guardian-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
 /* Page */
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-title { font-size: 28px; font-weight: 700; }
@@ -1253,6 +1270,7 @@ button.btn-secondary {
   .brand-name, .brand-sub, .nav-link span:last-child, .sidebar-footer, .nav-stats { display: none; }
   .nav-link { justify-content: center; }
   .main-content { padding: 16px; }
+  .main-content.main-content--guardian-host { padding: 0; }
   .charts-grid { grid-template-columns: 1fr; }
   .form-row { grid-template-columns: 1fr; }
 }

@@ -1,0 +1,9 @@
+{
+  "risk_mapping": {
+    "low": "probability < 0.3",
+    "medium": "0.3 <= probability <= 0.7",
+    "high": "probability > 0.7"
+  },
+  "classification_threshold_default": 0.5,
+  "classification_threshold_best_f1_on_validation": 0.6477627754211426
+}

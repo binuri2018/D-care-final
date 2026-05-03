@@ -1,0 +1,6 @@
+Analyzing mobile_app...                                         
+
+   info - The import of 'dart:ui' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart' - lib\core\widgets\glass_card.dart:1:8 - unnecessary_import
+  error - Undefined name '_locationText' - lib\screens\dashboard_screen.dart:75:5 - undefined_identifier
+  error - Undefined name '_locationText' - lib\screens\dashboard_screen.dart:119:11 - undefined_identifier
+

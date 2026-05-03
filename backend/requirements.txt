@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic
+python-dotenv
 firebase-admin
 python-multipart
 numpy
@@ -18,3 +19,6 @@ soundfile
 
 # Cognitive screening prototype (/api/predict, /api/start-session, MRI, confusion frame)
 -r requirements-cognitive-screening.txt
+
+# Dementia Guardian (auth, pairing, alerts, clinical/MRI inference, Socket.IO) — needs MONGO_URI
+-r requirements-guardian.txt

@@ -1,0 +1,13 @@
+{
+  "feature_order": [
+    "Age",
+    "BMI",
+    "EducationLevel",
+    "MMSE",
+    "FunctionalAssessment",
+    "MemoryComplaints",
+    "Forgetfulness"
+  ],
+  "target": "Diagnosis",
+  "notes": "Maintain exact feature order during inference."
+}
