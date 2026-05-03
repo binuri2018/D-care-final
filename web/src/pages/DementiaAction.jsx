@@ -18,6 +18,95 @@ import { drawPoseOverlay } from "../utils/poseOverlay";
 
 const LS_ALERTS = "dc_console_alerts_enabled";
 const ASSET_BASE = process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const MAX_UPLOAD_LOG_LINES = 500;
+const ACCEPT_UPLOAD = "video/mp4,video/quicktime,video/x-msvideo,video/webm,video/*,image/jpeg,image/png,image/*";
+
+/** Same pipe-separated technical line as the live camera footer (pose + LSTM + risk metrics). */
+/**
+ * Seek video for frame extraction. Listener must be registered before mutating currentTime
+ * (otherwise seeked can fire synchronously and be missed). No seeked when time unchanged.
+ */
+function waitForVideoSeek(video, targetTime) {
+  const dur = Number(video.duration);
+  if (!Number.isFinite(dur) || dur <= 0) {
+    return Promise.reject(new Error("invalid video duration"));
+  }
+  const t = Math.min(Math.max(0, targetTime), Math.max(0, dur - 0.001));
+  if (Math.abs(video.currentTime - t) < 0.02) {
+    return new Promise((r) => {
+      requestAnimationFrame(() => r());
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const to = window.setTimeout(() => {
+      video.removeEventListener("seeked", onSeeked);
+      reject(new Error("seek timeout — try a shorter clip or MP4 (H.264)"));
+    }, 15000);
+    const onSeeked = () => {
+      window.clearTimeout(to);
+      video.removeEventListener("seeked", onSeeked);
+      requestAnimationFrame(() => resolve());
+    };
+    video.addEventListener("seeked", onSeeked);
+    try {
+      video.currentTime = t;
+    } catch (e) {
+      window.clearTimeout(to);
+      video.removeEventListener("seeked", onSeeked);
+      reject(e);
+    }
+  });
+}
+
+function buildTechnicalLogLine({ tab, cameraOn, liveError, lastFrame, riskSnap: riskFallback }) {
+  if (!lastFrame) {
+    if (!cameraOn && tab === "live") return "Camera idle | —";
+    if (tab === "upload")
+      return "Run Analyze on a clip to append per-frame detection logs here (same format as live camera).";
+    return "—";
+  }
+  const kpts = lastFrame.keypoints_normalized;
+  const vis = countVisibleKeypoints(kpts);
+  const poseVisibleServer =
+    lastFrame.pose_visible_keypoints != null
+      ? Number(lastFrame.pose_visible_keypoints)
+      : lastFrame.pose_quality?.visible_count != null
+        ? Number(lastFrame.pose_quality.visible_count)
+        : null;
+  const poseVisible =
+    poseVisibleServer != null && !Number.isNaN(poseVisibleServer) ? poseVisibleServer : vis;
+  const action = lastFrame.action || "Unknown";
+  const conf = lastFrame.confidence ?? 0;
+  const posture = postureLabel(vis, kpts);
+  const riskSnap = lastFrame.risk ?? riskFallback;
+
+  const videoState =
+    !cameraOn && tab === "live"
+      ? "Camera idle"
+      : liveError === "models"
+        ? "State: models not loaded on server"
+        : liveError === "network"
+          ? "State: could not reach analysis API"
+          : poseVisible < 6
+            ? "State: No reliable full-body pose"
+            : riskSnap?.risk === "High" || riskSnap?.risk === "Medium"
+              ? `State: ${riskSnap.risk} — ${riskSnap.behavior_type || ""}`
+              : `State: ${action}`;
+
+  return [
+    `${videoState.replace(/^State: /, "")}`,
+    `Posture ${posture} (${conf.toFixed(2)})`,
+    `Motion ${(Number(riskSnap?.walking_density) || 0).toFixed(2)} density`,
+    `Server pose_visible_keypoints ${poseVisible}/17 (conf>0.25)`,
+    `LSTM ${action} (${conf.toFixed(2)})`,
+    `Lying ${Math.round(riskSnap?.lying_duration ?? 0)}s`,
+    `Sit-stand ${riskSnap?.sit_stand_repetition_count ?? 0}`,
+    `Turns ${riskSnap?.direction_change_count ?? 0}`,
+    `Exit-zone ${Math.round(riskSnap?.exit_zone_time ?? 0)}s`,
+    `Signals: ${(riskSnap?.risk_signals || []).join(", ") || "none"}`,
+  ].join(" | ");
+}
 
 function countVisibleKeypoints(kpts) {
   if (!Array.isArray(kpts) || !kpts.length) return 0;
@@ -38,6 +127,12 @@ function centerFromKeypoints(kpts) {
     sy += p[1];
   }
   return [sx / n, sy / n];
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function postureLabel(visible, kpts) {
@@ -71,6 +166,14 @@ export default function DementiaAction() {
   const [cameraOn, setCameraOn] = useState(false);
   const [monitorExitZone, setMonitorExitZone] = useState(true);
   const [edgeThreshold, setEdgeThreshold] = useState(0.15);
+  const [uploadFps, setUploadFps] = useState(15);
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadObjectUrl, setUploadObjectUrl] = useState(null);
+  const [uploadVideoReady, setUploadVideoReady] = useState(false);
+  const [uploadAnalyzing, setUploadAnalyzing] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadDropActive, setUploadDropActive] = useState(false);
+  const [uploadDetectionLogs, setUploadDetectionLogs] = useState([]);
 
   const [lastFrame, setLastFrame] = useState(null);
   const [liveError, setLiveError] = useState("");
@@ -85,6 +188,10 @@ export default function DementiaAction() {
   const sessionIdRef = useRef(null);
   const shellRef = useRef(null);
   const overlayRef = useRef(null);
+  const uploadShellRef = useRef(null);
+  const uploadOverlayRef = useRef(null);
+  const uploadImgRef = useRef(null);
+  const uploadLogPreRef = useRef(null);
   const historyRef = useRef([]);
   const lastRiskAtRef = useRef(0);
   const modelWarnedRef = useRef(false);
@@ -171,6 +278,72 @@ export default function DementiaAction() {
     refreshIncidents();
   }, [tab, refreshIncidents]);
 
+  /* Do not revoke blob URLs in an effect cleanup tied to uploadObjectUrl — React 18 Strict Mode
+   * runs cleanup on a simulated unmount and revokes the URL while state/src still point at it
+   * (net::ERR_FILE_NOT_FOUND). Revoke only when replacing or clearing the file (below). */
+
+  const clearUploadSelection = useCallback(() => {
+    if (uploadObjectUrl) URL.revokeObjectURL(uploadObjectUrl);
+    setUploadObjectUrl(null);
+    setUploadFile(null);
+    setUploadVideoReady(false);
+    setUploadProgress(null);
+    setUploadDetectionLogs([]);
+    const v = uploadVideoRef.current;
+    if (v) {
+      v.removeAttribute("src");
+      v.load();
+    }
+    const img = uploadImgRef.current;
+    if (img) img.removeAttribute("src");
+    setLastFrame(null);
+    setRiskSnap(null);
+  }, [uploadObjectUrl]);
+
+  const assignUploadFile = useCallback(
+    (file) => {
+      if (!file) return;
+      if (file.size > MAX_UPLOAD_BYTES) {
+        toast.error("File exceeds 200 MB limit.", { duration: 4000 });
+        return;
+      }
+      if (uploadObjectUrl) URL.revokeObjectURL(uploadObjectUrl);
+      const url = URL.createObjectURL(file);
+      setUploadObjectUrl(url);
+      setUploadFile(file);
+      setUploadVideoReady(false);
+      setUploadDetectionLogs([]);
+      setLastFrame(null);
+      setRiskSnap(null);
+      if (file.type.startsWith("video/")) {
+        const img = uploadImgRef.current;
+        if (img) img.removeAttribute("src");
+        /* Video <video> mounts only after setUploadFile commits; src is bound via JSX + onLoadedMetadata. */
+      } else if (file.type.startsWith("image/")) {
+        const v = uploadVideoRef.current;
+        if (v) {
+          v.removeAttribute("src");
+          v.load();
+        }
+        const img = uploadImgRef.current;
+        if (img) img.src = url;
+        setUploadVideoReady(false);
+      }
+    },
+    [uploadObjectUrl]
+  );
+
+  const openUploadPicker = useCallback(() => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ACCEPT_UPLOAD;
+    inp.onchange = () => {
+      const f = inp.files?.[0];
+      if (f) assignUploadFile(f);
+    };
+    inp.click();
+  }, [assignUploadFile]);
+
   const stopCamera = useCallback(() => {
     if (analyzeTimerRef.current) {
       clearInterval(analyzeTimerRef.current);
@@ -233,7 +406,7 @@ export default function DementiaAction() {
 
   const processFrameBlob = useCallback(
     async (blob, opts = {}) => {
-      if (!blob) return;
+      if (!blob) return undefined;
       const sid = opts.sessionId ?? sessionIdRef.current;
       try {
         let data;
@@ -308,20 +481,21 @@ export default function DementiaAction() {
                 .catch(() => {});
             }
           }
-        } else {
-          data = await analyzeFrame(blob);
-          setLiveError("");
-          setLastFrame(data);
-          const kpts = data.keypoints_normalized;
-          const vis = countVisibleKeypoints(kpts);
-          const action = data.action || "Unknown";
-          const conf = data.confidence ?? 0;
-          const center = centerFromKeypoints(kpts);
-          if (vis >= 6 && action !== "Unknown") {
-            pushHistory(center, action, conf);
-            await pollRisk();
-          }
+          return data;
         }
+        data = await analyzeFrame(blob);
+        setLiveError("");
+        setLastFrame(data);
+        const kpts = data.keypoints_normalized;
+        const vis = countVisibleKeypoints(kpts);
+        const action = data.action || "Unknown";
+        const conf = data.confidence ?? 0;
+        const center = centerFromKeypoints(kpts);
+        if (vis >= 6 && action !== "Unknown") {
+          pushHistory(center, action, conf);
+          await pollRisk();
+        }
+        return data;
       } catch (e) {
         const msg = e.message || String(e);
         setLastFrame(null);
@@ -340,10 +514,130 @@ export default function DementiaAction() {
         } else {
           setLiveError("network");
         }
+        return undefined;
       }
     },
     [monitorExitZone, edgeThreshold, pollRisk, pushHistory, refreshIncidents, refreshLogs, alertsEnabled, playAlertBeep]
   );
+
+  const analyzeUploadedImage = useCallback(async () => {
+    if (!uploadFile?.type.startsWith("image/")) return;
+    setLiveError("");
+    setUploadAnalyzing(true);
+    setUploadProgress({ current: 0, total: 1 });
+    setUploadDetectionLogs([]);
+    try {
+      let uploadSid = null;
+      try {
+        const created = await createLiveSession();
+        uploadSid = created?.session_id;
+        if (!uploadSid) throw new Error("no session_id");
+        const imgData = await processFrameBlob(uploadFile, {
+          sessionId: uploadSid,
+          ephemeralSession: true,
+        });
+        if (imgData) {
+          const line = buildTechnicalLogLine({
+            tab: "upload",
+            cameraOn: false,
+            liveError: "",
+            lastFrame: imgData,
+            riskSnap: imgData.risk,
+          });
+          setUploadDetectionLogs([`[image 1/1] ${line}`]);
+        }
+      } finally {
+        if (uploadSid) await deleteLiveSession(uploadSid).catch(() => {});
+      }
+      setUploadProgress({ current: 1, total: 1 });
+      toast.success("Image analyzed.", { duration: 2000 });
+    } catch (e) {
+      toast.error(e.message || String(e));
+    } finally {
+      setUploadAnalyzing(false);
+      setUploadProgress(null);
+    }
+  }, [uploadFile, processFrameBlob]);
+
+  const analyzeUploadedVideo = useCallback(async () => {
+    if (!uploadFile?.type.startsWith("video/")) {
+      toast.error("Choose a video file first.");
+      return;
+    }
+    const v = uploadVideoRef.current;
+    if (!v) {
+      toast.error("Video preview is not ready yet — wait for the thumbnail to appear, then try again.");
+      return;
+    }
+    await new Promise((r) => {
+      if (v.readyState >= 1) r();
+      else v.addEventListener("loadedmetadata", () => r(), { once: true });
+    });
+    if (!v.videoWidth) {
+      toast.error("Video not ready — try MP4 / H.264.");
+      return;
+    }
+    const duration = v.duration;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      toast.error("Could not read video duration.");
+      return;
+    }
+    const fps = Math.max(5, Math.min(30, uploadFps));
+    const total = Math.min(Math.ceil(duration * fps), 1500);
+    let sid = null;
+    setLiveError("");
+    setUploadAnalyzing(true);
+    setUploadProgress({ current: 0, total });
+    setUploadDetectionLogs([]);
+    modelWarnedRef.current = false;
+    try {
+      const created = await createLiveSession();
+      sid = created?.session_id;
+      if (!sid) throw new Error("no session_id");
+      for (let i = 0; i < total; i++) {
+        const t = total <= 1 ? 0 : (i / (total - 1)) * Math.max(duration - 0.05, 0);
+        await waitForVideoSeek(v, t);
+        const canvas = document.createElement("canvas");
+        const maxW = 640;
+        const sc = v.videoWidth > maxW ? maxW / v.videoWidth : 1;
+        canvas.width = Math.round(v.videoWidth * sc);
+        canvas.height = Math.round(v.videoHeight * sc);
+        if (!canvas.width || !canvas.height) {
+          throw new Error("Could not decode video frame size");
+        }
+        canvas.getContext("2d").drawImage(v, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((res) =>
+          canvas.toBlob((b) => res(b), "image/jpeg", 0.82)
+        );
+        if (!blob) {
+          throw new Error("Could not encode frame as JPEG");
+        }
+        const frameData = await processFrameBlob(blob, { sessionId: sid, ephemeralSession: true });
+        if (frameData) {
+          const line = buildTechnicalLogLine({
+            tab: "upload",
+            cameraOn: false,
+            liveError: "",
+            lastFrame: frameData,
+            riskSnap: frameData.risk,
+          });
+          setUploadDetectionLogs((prev) =>
+            [...prev, `[f ${i + 1}/${total}] ${line}`].slice(-MAX_UPLOAD_LOG_LINES)
+          );
+        }
+        setUploadProgress({ current: i + 1, total });
+      }
+      toast.success(`Analyzed ${total} frames.`, { duration: 2500 });
+    } catch (e) {
+      const msg = e.message || String(e);
+      setLiveError(msg.includes("503") || msg.includes("not found") ? "models" : "network");
+      toast.error(msg, { duration: 6000 });
+    } finally {
+      if (sid) await deleteLiveSession(sid).catch(() => {});
+      setUploadAnalyzing(false);
+      setUploadProgress(null);
+    }
+  }, [uploadFile, uploadFps, processFrameBlob]);
 
   useEffect(() => {
     if (!cameraOn) return undefined;
@@ -361,11 +655,12 @@ export default function DementiaAction() {
     };
   }, [cameraOn, captureBlob, processFrameBlob]);
 
-  /** CV-style HUD: skeleton + box + labels (matches integrated pose pipeline). */
+  /** CV-style HUD: skeleton + box + labels — live camera and uploaded video share the same pipeline. */
   useEffect(() => {
-    const shell = shellRef.current;
-    const video = videoRef.current;
-    const canvas = overlayRef.current;
+    const live = tab === "live";
+    const shell = live ? shellRef.current : uploadShellRef.current;
+    const video = live ? videoRef.current : uploadVideoRef.current;
+    const canvas = live ? overlayRef.current : uploadOverlayRef.current;
     if (!shell || !video || !canvas) return undefined;
 
     const paint = () => {
@@ -382,7 +677,12 @@ export default function DementiaAction() {
       canvas.style.height = `${h}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      if (tab !== "live" || !cameraOn || !video.videoWidth) {
+      const show =
+        live && cameraOn && video.videoWidth
+          ? true
+          : !live && uploadFile?.type?.startsWith("video/") && uploadVideoReady && video.videoWidth;
+
+      if (!show) {
         ctx.clearRect(0, 0, w, h);
         return;
       }
@@ -405,7 +705,8 @@ export default function DementiaAction() {
       else if (liveError === "network") stateLine = "State: Offline";
       else if (srvVis < 6) stateLine = "State: Uncertain";
       else if (riskSnap?.risk === "High" || riskSnap?.risk === "Medium") stateLine = "State: Elevated risk";
-      else if (act !== "Unknown") stateLine = "State: Tracking";
+      else if (act !== "Unknown") stateLine = live ? "State: Tracking" : "State: Normal";
+      else if (!live && srvVis >= 6) stateLine = "State: Normal";
       else stateLine = "State: Uncertain";
 
       let greenLine;
@@ -427,8 +728,8 @@ export default function DementiaAction() {
         keypointConfidences: kconf,
         stateText: stateLine,
         actionText: greenLine,
-        targetLabel: "Target ID 1",
-        insideBoxText: "Memory Aid · live pose feed",
+        targetLabel: live ? "Target ID 1" : "Target ID 0",
+        insideBoxText: live ? "Memory Aid · live pose feed" : "Memory Aid · video upload",
       });
     };
 
@@ -438,12 +739,20 @@ export default function DementiaAction() {
     const onVid = () => paint();
     video.addEventListener("loadedmetadata", onVid);
     video.addEventListener("playing", onVid);
+    video.addEventListener("seeked", onVid);
     return () => {
       ro.disconnect();
       video.removeEventListener("loadedmetadata", onVid);
       video.removeEventListener("playing", onVid);
+      video.removeEventListener("seeked", onVid);
     };
-  }, [lastFrame, cameraOn, liveError, riskSnap, tab]);
+  }, [lastFrame, cameraOn, liveError, riskSnap, tab, uploadFile, uploadVideoReady]);
+
+  useEffect(() => {
+    const el = uploadLogPreRef.current;
+    if (!el || tab !== "upload" || uploadDetectionLogs.length === 0) return;
+    el.scrollTop = el.scrollHeight;
+  }, [uploadDetectionLogs, tab]);
 
   const startCamera = async () => {
     setLiveError("");
@@ -535,68 +844,6 @@ export default function DementiaAction() {
     }
   };
 
-  const onUploadVideo = () => {
-    const inp = document.createElement("input");
-    inp.type = "file";
-    inp.accept = "video/*,image/*";
-    inp.onchange = async () => {
-      const f = inp.files?.[0];
-      if (!f) return;
-      if (f.type.startsWith("image/")) {
-        let uploadSid = null;
-        try {
-          const created = await createLiveSession();
-          uploadSid = created.session_id;
-          if (!uploadSid) throw new Error("no session_id");
-          await processFrameBlob(f, { sessionId: uploadSid, ephemeralSession: true });
-        } finally {
-          if (uploadSid) await deleteLiveSession(uploadSid).catch(() => {});
-        }
-        toast.success("Image analyzed.", { duration: 2000 });
-        return;
-      }
-      const url = URL.createObjectURL(f);
-      const v = uploadVideoRef.current;
-      if (!v) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      v.src = url;
-      v.muted = true;
-      await v.play().catch(() => {});
-      let uploadSid = null;
-      try {
-        const created = await createLiveSession();
-        uploadSid = created.session_id;
-        if (!uploadSid) throw new Error("no session_id");
-      } catch {
-        URL.revokeObjectURL(url);
-        toast.error("Could not start server live session.", { duration: 4000 });
-        return;
-      }
-      let n = 0;
-      const iv = setInterval(async () => {
-        if (!v.videoWidth || v.paused || v.ended || n >= 90) {
-          clearInterval(iv);
-          URL.revokeObjectURL(url);
-          if (uploadSid) await deleteLiveSession(uploadSid).catch(() => {});
-          toast.success(`Processed ${n} video frames.`, { duration: 2500 });
-          return;
-        }
-        n += 1;
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.min(v.videoWidth, 640);
-        canvas.height = Math.min(v.videoHeight, 480);
-        canvas.getContext("2d").drawImage(v, 0, 0, canvas.width, canvas.height);
-        const blob = await new Promise((res) =>
-          canvas.toBlob((b) => res(b), "image/jpeg", 0.82)
-        );
-        await processFrameBlob(blob, { sessionId: uploadSid, ephemeralSession: true });
-      }, 480);
-    };
-    inp.click();
-  };
-
   const kpts = lastFrame?.keypoints_normalized;
   const vis = countVisibleKeypoints(kpts);
   const poseVisibleServer =
@@ -629,18 +876,13 @@ export default function DementiaAction() {
         ? "No reliable f…"
         : riskSnap?.behavior_type || "Observation";
 
-  const logLine = [
-    `${videoState.replace(/^State: /, "")}`,
-    `Posture ${posture} (${conf.toFixed(2)})`,
-    `Motion ${(Number(riskSnap?.walking_density) || 0).toFixed(2)} density`,
-    `Server pose_visible_keypoints ${poseVisible}/17 (conf>0.25)`,
-    `LSTM ${action} (${conf.toFixed(2)})`,
-    `Lying ${Math.round(riskSnap?.lying_duration ?? 0)}s`,
-    `Sit-stand ${riskSnap?.sit_stand_repetition_count ?? 0}`,
-    `Turns ${riskSnap?.direction_change_count ?? 0}`,
-    `Exit-zone ${Math.round(riskSnap?.exit_zone_time ?? 0)}s`,
-    `Signals: ${(riskSnap?.risk_signals || []).join(", ") || "none"}`,
-  ].join(" | ");
+  const logLine = buildTechnicalLogLine({
+    tab,
+    cameraOn,
+    liveError,
+    lastFrame,
+    riskSnap,
+  });
 
   return (
     <div className="dc-console">
@@ -768,19 +1010,207 @@ export default function DementiaAction() {
       {tab === "upload" && (
         <div className="dc-upload-panel">
           <p className="dc-lead small">
-            Upload a short video or a single image. Videos are sampled in real time in the browser
-            and each frame is sent to the analysis API (use modest clips to avoid overload).
+            Upload a short video to review the human-activity timeline with the same YOLOv8-pose + LSTM
+            pipeline as live camera. Frames are sampled in the browser (cap 1500 frames); use modest
+            clips to avoid overload. MP4, MOV, AVI, WebM up to 200&nbsp;MB.
           </p>
-          <button type="button" className="btn-primary" onClick={onUploadVideo}>
-            Choose file…
+
+          <div
+            role="button"
+            tabIndex={0}
+            className={`dc-upload-dropzone ${uploadDropActive ? "dc-upload-dropzone--active" : ""}`}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              setUploadDropActive(true);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setUploadDropActive(true);
+            }}
+            onDragLeave={() => setUploadDropActive(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setUploadDropActive(false);
+              const f = e.dataTransfer?.files?.[0];
+              if (f) assignUploadFile(f);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openUploadPicker();
+              }
+            }}
+          >
+            <div className="dc-upload-dropzone-icon" aria-hidden>
+              ☁️
+            </div>
+            <p>Drag and drop a file here, or browse.</p>
+            <div className="dc-upload-dropzone-actions">
+              <button type="button" className="btn-secondary" onClick={openUploadPicker}>
+                Browse files
+              </button>
+            </div>
+          </div>
+
+          {uploadFile && (
+            <div className="dc-upload-file-row">
+              <span className="dc-upload-file-row-icon" aria-hidden>
+                {uploadFile.type.startsWith("video/") ? "🎬" : "🖼️"}
+              </span>
+              <div className="dc-upload-file-meta">
+                <div className="dc-upload-file-name">{uploadFile.name}</div>
+                <div className="dc-upload-file-size">{formatBytes(uploadFile.size)}</div>
+              </div>
+              <button
+                type="button"
+                className="dc-upload-remove"
+                title="Remove file"
+                onClick={clearUploadSelection}
+                disabled={uploadAnalyzing}
+              >
+                🗑️
+              </button>
+            </div>
+          )}
+
+          <div className="dc-upload-controls">
+            {uploadFile?.type.startsWith("video/") && (
+              <div className="dc-slider-row">
+                <label htmlFor="dc-upload-fps">Sample rate (frames / sec)</label>
+                <input
+                  id="dc-upload-fps"
+                  type="range"
+                  min="5"
+                  max="30"
+                  step="1"
+                  value={uploadFps}
+                  onChange={(e) => setUploadFps(Number(e.target.value))}
+                />
+                <span className="dc-slider-val">{uploadFps}</span>
+              </div>
+            )}
+            <div className="dc-slider-row">
+              <label htmlFor="dc-upload-edge">Exit-zone edge threshold</label>
+              <input
+                id="dc-upload-edge"
+                type="range"
+                min="0.05"
+                max="0.35"
+                step="0.01"
+                value={edgeThreshold}
+                onChange={(e) => setEdgeThreshold(Number(e.target.value))}
+              />
+              <span className="dc-slider-val">{edgeThreshold.toFixed(2)}</span>
+            </div>
+            <label className="dc-check">
+              <input
+                type="checkbox"
+                checked={monitorExitZone}
+                onChange={(e) => setMonitorExitZone(e.target.checked)}
+                disabled={uploadAnalyzing}
+              />
+              Monitor exit-zone for uploaded video
+            </label>
+          </div>
+
+          {uploadAnalyzing && uploadProgress && (
+            <div className="dc-upload-progress">
+              <div className="dc-upload-progress-label">
+                Analyzing frame {uploadProgress.current}/{uploadProgress.total}…
+              </div>
+              <div className="dc-upload-progress-track">
+                <div
+                  className="dc-upload-progress-fill"
+                  style={{
+                    width: `${Math.min(100, (100 * uploadProgress.current) / Math.max(uploadProgress.total, 1))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="dc-btn-analyze"
+            disabled={
+              uploadAnalyzing ||
+              !uploadFile ||
+              (uploadFile.type.startsWith("video/") && !uploadVideoReady)
+            }
+            onClick={() => {
+              if (uploadFile?.type.startsWith("image/")) void analyzeUploadedImage();
+              else void analyzeUploadedVideo();
+            }}
+          >
+            {uploadFile?.type.startsWith("image/") ? "Analyze image" : "Analyze uploaded video"}
           </button>
-          <video
-            ref={uploadVideoRef}
-            className="dc-upload-video"
-            playsInline
-            muted
-            aria-hidden
-          />
+
+          {uploadFile?.type.startsWith("image/") && uploadObjectUrl && (
+            <img
+              ref={uploadImgRef}
+              src={uploadObjectUrl}
+              alt="Upload preview"
+              className="dc-upload-preview-img"
+            />
+          )}
+
+          {uploadFile?.type.startsWith("video/") && uploadObjectUrl && (
+            <div className="dc-video-shell" ref={uploadShellRef}>
+              <video
+                key={uploadObjectUrl}
+                ref={uploadVideoRef}
+                className="dc-upload-video"
+                src={uploadObjectUrl}
+                playsInline
+                muted
+                preload="auto"
+                onLoadedMetadata={(e) => {
+                  if (e.currentTarget.videoWidth) setUploadVideoReady(true);
+                }}
+                onError={() => {
+                  setUploadVideoReady(false);
+                  toast.error(
+                    "This video failed to load in the browser. Try MP4 with H.264/AAC.",
+                    { duration: 6000 }
+                  );
+                }}
+              />
+              <canvas
+                ref={uploadOverlayRef}
+                className={`dc-pose-overlay ${
+                  uploadVideoReady ? "dc-pose-overlay--on" : "dc-pose-overlay--off"
+                }`}
+                aria-hidden
+              />
+              {!uploadVideoReady && (
+                <div className="dc-video-placeholder">Load a video to preview</div>
+              )}
+              {uploadVideoReady && (
+                <div className="dc-upload-frame-footer">
+                  {uploadAnalyzing && uploadProgress ? (
+                    <>
+                      Analyzing frame {uploadProgress.current}/{uploadProgress.total}… |{" "}
+                    </>
+                  ) : (
+                    <>Preview (seek while analyzing) | </>
+                  )}
+                  {liveError === "models"
+                    ? "Models missing"
+                    : liveError === "network"
+                      ? "API error"
+                      : riskSnap?.risk === "High" || riskSnap?.risk === "Medium"
+                        ? riskSnap.risk
+                        : "Normal"}{" "}
+                  |{" "}
+                  {lastFrame?.incident_saved
+                    ? "Incident saved — see Captures tab"
+                    : riskSnap?.risk === "High" || riskSnap?.risk === "Medium"
+                      ? riskSnap.reason || riskSnap.behavior_type || "Review signals"
+                      : "No abnormal behavior candidate."}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -880,8 +1310,17 @@ export default function DementiaAction() {
               : "Pose OK — monitoring continues. Normal activity is not logged as an abnormal capture."}
       </div>
 
-      <pre className="dc-log" aria-label="Technical log">
-        {logLine}
+      {tab === "upload" && uploadDetectionLogs.length > 0 && (
+        <p className="dc-upload-log-hint dc-muted">
+          Video upload: per-frame detection log (same pipe-separated fields as live camera). Latest at bottom.
+        </p>
+      )}
+      <pre
+        ref={uploadLogPreRef}
+        className={`dc-log${tab === "upload" && uploadDetectionLogs.length ? " dc-log--upload-scroll" : ""}`}
+        aria-label="Technical log"
+      >
+        {tab === "upload" && uploadDetectionLogs.length > 0 ? uploadDetectionLogs.join("\n") : logLine}
       </pre>
 
       <section className="dc-dash-tables" aria-label="Live behaviour and alert history">
