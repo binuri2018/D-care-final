@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -12,6 +13,8 @@ from ..deps import get_current_user, get_settings
 from ..services.inference import clinical_payload_from_form, run_clinical_subprocess
 from ..services.risk import hybrid_from_scores, mapped_from_probability
 from ..util import now_utc
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["clinical"])
 
@@ -61,7 +64,9 @@ async def submit_clinical(
     try:
         raw = await run_clinical_subprocess(settings.python_bin, clin_path, payload)
     except Exception as e:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e)) from e
+        # Common causes: missing xgboost/joblib in PYTHON_BIN env, bad model path, model load/predict error.
+        logger.exception("Clinical inference subprocess failed")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
 
     if "error" in raw:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, raw.get("error", "inference error"))
@@ -111,6 +116,7 @@ async def submit_clinical(
     except DuplicateKeyError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except PyMongoError as e:
+        logger.exception("Clinical form DB write failed")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database error: {e}") from e
 
     return {

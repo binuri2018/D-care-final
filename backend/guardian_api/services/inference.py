@@ -61,18 +61,21 @@ async def _communicate_infer(
 
 
 async def run_clinical_subprocess(python_bin: str, model_path: Path, payload: dict) -> dict:
-    script = _GUARDIAN_ROOT / "ml" / "infer_clinical.py"
-    out, err, code = await _communicate_infer(
-        python_bin,
-        script,
-        cwd=_GUARDIAN_ROOT,
-        stdin_payload=json.dumps(payload).encode("utf-8"),
-        extra_args=["--model", str(model_path)],
-    )
-    if code != 0:
-        msg = err.decode("utf-8", errors="replace") or out.decode("utf-8", errors="replace")
-        raise RuntimeError(msg or "clinical inference failed")
-    return _parse_json_stdout(out, what="clinical inference")
+    """
+    Run clinical XGBoost inference in a worker thread using **this** interpreter.
+
+    A separate subprocess + PYTHON_BIN often caused 502 on Windows when the API ran
+    from a venv that had xgboost/sklearn but `python` on PATH did not. MRI inference
+    still uses a subprocess (see run_mri_subprocess).
+    """
+    _ = python_bin  # kept for backward-compatible call sites
+
+    def _run_sync() -> dict:
+        from guardian_api.ml.infer_clinical import run as clinical_run
+
+        return clinical_run(model_path, payload)
+
+    return await asyncio.to_thread(_run_sync)
 
 
 async def run_mri_subprocess(python_bin: str, model_path: Path, image_path: Path) -> dict:
