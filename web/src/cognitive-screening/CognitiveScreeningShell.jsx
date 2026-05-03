@@ -4,7 +4,7 @@ export default function CognitiveScreeningShell() {
   return (
     <div className="screening-integrated">
       <div className="screening-back">
-        <Link to="/">← Memory Aid home</Link>
+        <Link to="/">← D-care home</Link>
       </div>
       <Outlet />
     </div>

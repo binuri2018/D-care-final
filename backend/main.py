@@ -109,7 +109,7 @@ async def _lifespan(app: FastAPI):
 
 
 fastapi_app = FastAPI(
-    title="Memory Aid + Reminder Backend",
+    title="D-care — Reminder & API backend",
     version="1.0.0",
     description=(
         "Indoor/outdoor reminders (mobile + web), memory/face, dementia_action_subsystem, "

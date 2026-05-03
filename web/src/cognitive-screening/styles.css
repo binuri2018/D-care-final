@@ -1,4 +1,4 @@
-/* Cognitive screening — scoped; uses Memory Aid :root + local aliases */
+/* Cognitive screening — scoped; uses D-care :root + local aliases */
 .screening-integrated {
   --panel: var(--surface);
   --panel-2: var(--surface2);
@@ -1197,7 +1197,7 @@
   color: var(--accent-hover);
 }
 
-/* Match Memory Aid radius, type scale, and main-content padding */
+/* Match D-care radius, type scale, and main-content padding */
 .screening-integrated .app-shell {
   padding: 0 0 2rem;
 }

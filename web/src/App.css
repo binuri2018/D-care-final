@@ -54,7 +54,7 @@ body {
 }
 
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
-.brand-memory-aid {
+.brand-d-care {
   flex-direction: row;
   flex-wrap: wrap;
   margin-bottom: 8px;
@@ -285,6 +285,48 @@ body {
   display: flex;
   gap: 10px;
   margin-top: 10px;
+}
+.mode-control-segment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px 0;
+}
+.mode-seg-btn {
+  flex: 1;
+  min-width: 140px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.mode-seg-btn:hover:not(:disabled) {
+  border-color: rgba(61, 140, 201, 0.45);
+}
+.mode-seg-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.mode-seg-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.mode-manual-actions {
+  margin-top: 12px;
+}
+.mode-manual-actions .mode-badge {
+  cursor: pointer;
+  font-weight: 600;
+}
+.mode-manual-actions .mode-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .mode-meta-row {
   display: flex;

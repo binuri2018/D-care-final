@@ -1,5 +1,5 @@
 // src/App.js
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -23,7 +23,7 @@ import ScreeningPatientInfo from "./cognitive-screening/pages/PatientInfo";
 import ScreeningMmseTest from "./cognitive-screening/pages/MmseTest";
 import ScreeningAdvancedTest from "./cognitive-screening/pages/AdvancedTest";
 import ScreeningDashboard from "./cognitive-screening/pages/Dashboard";
-import { getMode, setMode } from "./services/modeApi";
+import { getMode, setMode as postMode } from "./services/modeApi";
 import GuardianWebApp from "./guardian/GuardianWebApp";
 import { GuardianRootGate, GuardianDemoLayout } from "./guardian/App.tsx";
 import { LoginPage } from "./guardian/pages/LoginPage.tsx";
@@ -56,9 +56,9 @@ function Layout({
   return (
     <div className="app">
       <nav className="sidebar">
-        <div className="brand brand-memory-aid">
+        <div className="brand brand-d-care">
           <div className="brand-icon" aria-hidden>🧠</div>
-          <div className="brand-name">Memory Aid</div>
+          <div className="brand-name">D-care</div>
         </div>
 
         <div className="nav-links">
@@ -112,13 +112,12 @@ function Layout({
   );
 }
 
-/** Poll `/api/mode` this often so indoor/outdoor (driven only by mobile BLE) mirrors quickly on web */
+/** Poll `/api/mode` this often so the dashboard stays in sync with the backend (BLE or manual). */
 const MODE_POLL_MS = 5000;
 
 export default function App() {
   const [reminders, setReminders] = useState([]);
   const [mode, setModeState] = useState("indoor");
-  const migratedAutoRef = useRef(false);
 
   const [dispatchStatus, setDispatchStatus] = useState({
     mode: "indoor",
@@ -130,6 +129,28 @@ export default function App() {
     state: "idle",
   });
 
+  const applyModeFromWeb = useCallback(
+    async ({ mode: nextMode, source, autoModeSetting, reason }) => {
+      const data = await postMode({
+        mode: nextMode ?? mode,
+        source: source ?? "manual",
+        autoModeSetting,
+        reason: reason ?? "web: dashboard",
+      });
+      setModeState(data.mode);
+      setDispatchStatus((prev) => ({
+        ...prev,
+        mode: data.mode,
+        source: data.source || prev.source,
+        autoModeSetting: data.autoModeSetting || prev.autoModeSetting,
+        lastRssi:
+          typeof data.lastRssi === "number" ? data.lastRssi : prev.lastRssi,
+      }));
+      return data;
+    },
+    [mode],
+  );
+
   useEffect(() => {
     const unsub = subscribeToReminders(setReminders);
     return () => unsub();
@@ -138,23 +159,7 @@ export default function App() {
   useEffect(() => {
     const loadMode = async () => {
       try {
-        let data = await getMode();
-
-        if (!migratedAutoRef.current) {
-          if (
-            (data.autoModeSetting || "").toLowerCase() !== "bluetooth_auto"
-          ) {
-            try {
-              data = await setMode({
-                mode: data.mode || "indoor",
-                source: "bluetooth_auto",
-                autoModeSetting: "bluetooth_auto",
-                reason: "BLE beacon mode is mobile-led; unify auto setting",
-              });
-            } catch (_) {}
-          }
-          migratedAutoRef.current = true;
-        }
+        const data = await getMode();
 
         setModeState(data.mode);
         setDispatchStatus((prev) => ({
@@ -212,6 +217,7 @@ export default function App() {
                 autoModeSetting={dispatchStatus.autoModeSetting}
                 lastRssi={dispatchStatus.lastRssi}
                 dispatchStatus={dispatchStatus}
+                onApplyMode={applyModeFromWeb}
               />
             }
           />

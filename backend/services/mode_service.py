@@ -31,6 +31,26 @@ class ModeService:
 
     def update_mode(self, request: ModeUpdateRequest) -> Dict[str, Any]:
         current = self._store.get_mode_state()
+        manual_lock = current.get("autoModeSetting") == "manual"
+        ble_request = request.source == ModeSourceEnum.bluetooth_auto
+        web_explicit = (request.reason or "").strip().lower().startswith("web:")
+
+        if manual_lock and ble_request and not web_explicit:
+            if request.rssi is not None:
+                patch = {
+                    "mode": current["mode"],
+                    "source": current["source"],
+                    "autoModeSetting": current["autoModeSetting"],
+                    "deviceId": current.get("deviceId"),
+                    "lastRssi": request.rssi,
+                    "lastUpdateTime": (
+                        request.timestamp.isoformat()
+                        if request.timestamp is not None
+                        else datetime.now(timezone.utc).isoformat()
+                    ),
+                }
+                return self._store.set_mode_state(patch)
+            return self._store.get_mode_state()
 
         if request.autoModeSetting is not None:
             current["autoModeSetting"] = request.autoModeSetting.value

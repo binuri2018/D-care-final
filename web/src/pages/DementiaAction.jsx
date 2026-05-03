@@ -803,7 +803,7 @@ export default function DementiaAction() {
         stateText: stateLine,
         actionText: greenLine,
         targetLabel: live ? "Target ID 1" : "Target ID 0",
-        insideBoxText: live ? "Memory Aid · live pose feed" : "Memory Aid · video upload",
+        insideBoxText: live ? "D-care · live pose feed" : "D-care · video upload",
       });
     };
 
