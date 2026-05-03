@@ -2,9 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   faceIdentify,
-  faceRegisterBatch,
   faceRegisterSessionAbort,
-  faceRegisterSessionFinalize,
   faceRegisterSessionFrame,
   faceRegisterSessionRename,
   faceRegisterSessionStart,
@@ -250,7 +248,6 @@ export default function MemoryAid() {
   const [registerName, setRegisterName] = useState("");
   const [registerDesc, setRegisterDesc] = useState("");
   const [extraPhotos, setExtraPhotos] = useState([]);
-  const [captures, setCaptures] = useState([]);
 
   const [autoIdentify, setAutoIdentify] = useState(false);
   const speakOnRecognizeRef = useRef(true);
@@ -260,12 +257,36 @@ export default function MemoryAid() {
   const [registerLiveActive, setRegisterLiveActive] = useState(false);
   const [registerCaptureHint, setRegisterCaptureHint] = useState(null);
   const lastFrameAtRef = useRef(0);
+  const regSessionIdRef = useRef(null);
+  const registerLiveSentFrameRef = useRef(false);
   const identifyBusyRef = useRef(false);
   const identifyRunIdRef = useRef(0);
 
   useEffect(() => {
     speakOnRecognizeRef.current = speakUi;
   }, [speakUi]);
+
+  useEffect(() => {
+    regSessionIdRef.current = regSessionId;
+  }, [regSessionId]);
+
+  useEffect(() => {
+    return () => {
+      const sid = regSessionIdRef.current;
+      if (sid) faceRegisterSessionAbort(sid).catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tab === "register") return undefined;
+    if (!regSessionId) return undefined;
+    const sid = regSessionId;
+    faceRegisterSessionAbort(sid).catch(() => {});
+    setRegSessionId(null);
+    setRegisterLiveActive(false);
+    setRegisterCaptureHint(null);
+    registerLiveSentFrameRef.current = false;
+  }, [tab, regSessionId]);
 
   const bumpDetected = useCallback(() => {
     setDetectedList(Array.from(identifiedRef.current).sort());
@@ -480,44 +501,6 @@ export default function MemoryAid() {
     }
   };
 
-  const collectRegistrationFrames = async () => {
-    if (!registerName.trim()) {
-      toast.error("Enter full name first");
-      return;
-    }
-    const blob = await cam.captureJpegBlob();
-    if (!blob) {
-      toast.error("Camera not ready");
-      return;
-    }
-    setCaptures((c) => {
-      const next = [...c, blob].slice(-24);
-      toast.success(`${next.length} frame(s) queued`);
-      return next;
-    });
-  };
-
-  const submitFaceRegistration = async () => {
-    if (!registerName.trim()) {
-      toast.error("Enter a name");
-      return;
-    }
-    const files = captures.map(
-      (b, i) => new File([b], `cap_${i}.jpg`, { type: "image/jpeg" })
-    );
-    if (!files.length) {
-      toast.error("Add frames or use live capture");
-      return;
-    }
-    try {
-      await faceRegisterBatch(registerName.trim(), files);
-      toast.success("Face model saved");
-      setCaptures([]);
-    } catch (e) {
-      toast.error(e.message);
-    }
-  };
-
   const finalizeRecords = async () => {
     if (!registerName.trim()) {
       toast.error("Enter full name");
@@ -539,6 +522,7 @@ export default function MemoryAid() {
     }
     try {
       const { session_id: sid } = await faceRegisterSessionStart(registerName.trim());
+      registerLiveSentFrameRef.current = false;
       setRegSessionId(sid);
       setRegisterLiveActive(true);
       setRegisterCaptureHint({ captures: 0, max: 12 });
@@ -547,16 +531,6 @@ export default function MemoryAid() {
     } catch (e) {
       toast.error(e.message);
     }
-  };
-
-  const stopRegisterLiveSession = async () => {
-    setRegisterLiveActive(false);
-    setRegisterCaptureHint(null);
-    if (regSessionId) {
-      await faceRegisterSessionAbort(regSessionId);
-      setRegSessionId(null);
-    }
-    toast("Live capture stopped");
   };
 
   useEffect(() => {
@@ -568,6 +542,7 @@ export default function MemoryAid() {
       if (now - lastFrameAtRef.current < 850) return;
       const blob = await cam.captureJpegBlob();
       if (!blob) return;
+      registerLiveSentFrameRef.current = true;
       const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
       try {
         const r = await faceRegisterSessionFrame(regSessionId, file);
@@ -580,6 +555,7 @@ export default function MemoryAid() {
         });
         if (r.committed) {
           toast.success("Face model saved (12 embeddings)");
+          registerLiveSentFrameRef.current = false;
           setRegSessionId(null);
           setRegisterLiveActive(false);
         }
@@ -594,17 +570,16 @@ export default function MemoryAid() {
     };
   }, [tab, registerLiveActive, regSessionId, cam.streaming, cam.captureJpegBlob]);
 
-  const finalizePartialRegisterSession = async () => {
-    if (!regSessionId) return;
-    try {
-      await faceRegisterSessionFinalize(regSessionId);
-      toast.success("Partial face model saved");
-      setRegSessionId(null);
-      setRegisterLiveActive(false);
-    } catch (e) {
-      toast.error(e.message);
-    }
-  };
+  useEffect(() => {
+    if (tab !== "register" || !registerLiveActive || !regSessionId || cam.streaming) return undefined;
+    if (!registerLiveSentFrameRef.current) return undefined;
+    faceRegisterSessionAbort(regSessionId).catch(() => {});
+    setRegSessionId(null);
+    setRegisterLiveActive(false);
+    setRegisterCaptureHint(null);
+    registerLiveSentFrameRef.current = false;
+    toast("Live capture cancelled (camera stopped)");
+  }, [tab, registerLiveActive, regSessionId, cam.streaming]);
 
   const onVoiceRegister = async () => {
     if (!registerName.trim()) {
@@ -843,25 +818,18 @@ export default function MemoryAid() {
               <button type="button" className="btn-primary" onClick={startRegisterLiveSession} disabled={!registerName.trim()}>
                 Live capture (up to 12 frames)
               </button>
-              <button type="button" onClick={stopRegisterLiveSession} disabled={!registerLiveActive}>
-                Stop live capture
-              </button>
               {registerCaptureHint && (
                 <p className="capture-hint">
                   {registerCaptureHint.captures}/{registerCaptureHint.max}
                   {registerCaptureHint.face_count != null ? ` · faces: ${registerCaptureHint.face_count}` : ""}
                 </p>
               )}
-              <button type="button" onClick={finalizePartialRegisterSession} disabled={!regSessionId}>
-                Save partial face
-              </button>
-              <hr className="hr-soft" />
-              <button type="button" onClick={collectRegistrationFrames} disabled={!registerName.trim()}>
-                Add frame to batch
-              </button>
-              <button type="button" className="btn-primary" onClick={submitFaceRegistration}>
-                Save face from batch ({captures.length})
-              </button>
+              {registerLiveActive && (
+                <p className="muted capture-hint">
+                  Stop the camera or leave this tab to cancel live capture. Saving completes automatically at 12
+                  embeddings.
+                </p>
+              )}
             </div>
           </div>
 
