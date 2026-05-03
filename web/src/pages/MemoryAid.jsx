@@ -28,11 +28,10 @@ const PHASE_VOICE = "Listening — speak for 5s…";
 const PHASE_COMPLETE = "Recognition complete";
 const PHASE_NO_MATCH = "No match found";
 
-function buildGreetingLine(name, description) {
-  const desc = (description || "").trim();
-  let t = `Hello ${name}.`;
-  if (desc) t += ` ${desc}`;
-  return t;
+/** After recognition, TTS reads notes only (no greeting or name). */
+function memoryNotesSpeechText(description) {
+  const t = (description || "").trim();
+  return t.length ? t : null;
 }
 
 function useFaceCamera() {
@@ -313,9 +312,9 @@ export default function MemoryAid() {
         profile = { name, description: "", photo_urls: [] };
       }
       const desc = profile?.description || "";
-      const line = buildGreetingLine(name, desc);
-      if (speakOnRecognizeRef.current) {
-        speakReminder(line, { rate: 0.92, pitch: 1 });
+      const notesSpeech = memoryNotesSpeechText(desc);
+      if (speakOnRecognizeRef.current && notesSpeech) {
+        speakReminder(notesSpeech, { rate: 0.92, pitch: 1 });
       }
       setMemoryLogPerson(profile);
       toast.success(`Recognized: ${name}`, { duration: 3500 });
@@ -341,9 +340,9 @@ export default function MemoryAid() {
 
     setMemoryLogPerson(profile);
 
-    const line = buildGreetingLine(name, profile?.description || "");
-    if (speakOnRecognizeRef.current) {
-      speakReminder(line, { rate: 0.92, pitch: 1 });
+    const notesSpeech = memoryNotesSpeechText(profile?.description || "");
+    if (speakOnRecognizeRef.current && notesSpeech) {
+      speakReminder(notesSpeech, { rate: 0.92, pitch: 1 });
     }
 
     if (!identifiedRef.current.has(name)) {
@@ -629,7 +628,7 @@ export default function MemoryAid() {
         memorySlideTimeoutRef.current = null;
       }
       if (cancelled) return;
-      const ms = 1000 + Math.random() * 500;
+      const ms = 2000 + Math.random() * 500;
       memorySlideTimeoutRef.current = window.setTimeout(() => {
         memorySlideTimeoutRef.current = null;
         if (cancelled) return;
@@ -762,7 +761,7 @@ export default function MemoryAid() {
                     onChange={(e) => setSpeakUi(e.target.checked)}
                     disabled={identifyBusy}
                   />
-                  Read memory aloud when someone is recognized
+                  Read saved notes aloud when someone is recognized (notes only, no name greeting)
                 </label>
                 <div className="recognition-camera-tools">
                   {!cam.streaming ? (
