@@ -125,7 +125,9 @@ class DementiaActionLiveSession:
         self._pending_incident = None
         tr = pend["trigger"]
         risk_snap = pend["risk"]
-        pose_metrics = pend["pose_metrics"]
+        pose_metrics = dict(pend["pose_metrics"] or {})
+        if tr.get("confirmation_elapsed_s") is not None:
+            pose_metrics["confirmation_elapsed_s"] = tr["confirmation_elapsed_s"]
         incident_row = save_action_incident(
             list(self.frame_buffer),
             self.frame_buffer[-1][1],

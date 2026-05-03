@@ -12,6 +12,12 @@ export async function fetchDementiaIncidents(limit = 50) {
   return r.json();
 }
 
+export async function deleteAllDementiaIncidents() {
+  const r = await fetch(`${BACKEND_URL}/api/dementia-action/incidents`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`clear incidents ${r.status}`);
+  return r.json();
+}
+
 export async function fetchDementiaEvents() {
   const r = await fetch(`${BACKEND_URL}/api/dementia-action/events`);
   if (!r.ok) throw new Error(`events ${r.status}`);

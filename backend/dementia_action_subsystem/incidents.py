@@ -169,6 +169,31 @@ def _row_from_legacy(meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def delete_all_action_incidents() -> dict[str, int]:
+    """
+    Remove all incident JSON / snapshot / clip files under ACTION_INCIDENT_DIR.
+    Intended for clearing test captures in development.
+    """
+    root = Path(_dac_config.ACTION_INCIDENT_DIR)
+    removed = 0
+    if not root.is_dir():
+        return {"removed": 0}
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in (".json", ".jpg", ".jpeg", ".mp4"):
+            continue
+        stem = path.stem
+        if not stem.startswith("inc_") or len(stem) != 16:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return {"removed": removed}
+
+
 def load_recent_action_incidents(limit: int = 50) -> list[dict[str, Any]]:
     root = Path(_dac_config.ACTION_INCIDENT_DIR)
     if not root.is_dir():

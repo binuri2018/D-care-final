@@ -34,10 +34,12 @@ def build_incident_trigger(
     if (now - float(first_seen)) < required:
         return None
 
+    confirmation_elapsed_s = round(float(now) - float(first_seen), 2)
     confirmation_state[key] = now
     return {
         "behavior_type": btype,
         "reason": f"{reason} (Confirmed)",
         "detected_action": action,
         "confidence": confidence,
+        "confirmation_elapsed_s": confirmation_elapsed_s,
     }

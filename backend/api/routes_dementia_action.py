@@ -17,7 +17,10 @@ from dementia_action_subsystem.alerts import (
     build_caregiver_alert_message,
     send_caregiver_email_alert,
 )
-from dementia_action_subsystem.incidents import load_recent_action_incidents
+from dementia_action_subsystem.incidents import (
+    delete_all_action_incidents,
+    load_recent_action_incidents,
+)
 from dementia_action_subsystem.live_logs import (
     append_browser_alert_ack,
     list_caregiver_alert_log,
@@ -92,6 +95,13 @@ def dementia_action_health():
 def list_incidents(limit: int = 50):
     rows = load_recent_action_incidents(limit=min(max(limit, 1), 200))
     return {"data": rows}
+
+
+@router.delete("/dementia-action/incidents")
+def clear_incidents():
+    """Delete all stored incident files (snapshots, clips, metadata) for this subsystem."""
+    out = delete_all_action_incidents()
+    return {"ok": True, **out}
 
 
 @router.get("/dementia-action/events")

@@ -7,6 +7,7 @@ import {
   fetchAlertPreview,
   fetchDementiaActionHealth,
   fetchDementiaAlerts,
+  deleteAllDementiaIncidents,
   fetchDementiaEvents,
   fetchDementiaIncidents,
   postBrowserAlertAck,
@@ -150,6 +151,59 @@ function postureLabel(visible, kpts) {
   return "Standing";
 }
 
+function severityClassName(sev) {
+  const s = String(sev || "").toLowerCase();
+  if (s === "high") return "dc-sev-high";
+  if (s === "medium") return "dc-sev-medium";
+  return "dc-sev-low";
+}
+
+function formatCaptureActivityStats(m) {
+  if (!m || typeof m !== "object") {
+    return "Walking 0s | Direction changes 0 | Sit-stand 0 | Lying 0s | Exit-zone 0s";
+  }
+  const walk = Math.round(Number(m.walking_duration) || 0);
+  const turns = m.direction_change_count ?? 0;
+  const ss = m.sit_stand_repetition_count ?? 0;
+  const lie = Math.round(Number(m.lying_duration) || 0);
+  const ez = Math.round(Number(m.exit_zone_time) || 0);
+  return `Walking ${walk}s | Direction changes ${turns} | Sit-stand ${ss} | Lying ${lie}s | Exit-zone ${ez}s`;
+}
+
+function captureWhatHappenedText(row) {
+  const m = row.Metrics || {};
+  const lying = m.lying_duration != null ? Math.round(Number(m.lying_duration)) : null;
+  const conf = m.confirmation_elapsed_s != null ? Number(m.confirmation_elapsed_s) : null;
+  const r = (row.Reason || "").replace(/\s*\(Confirmed\)\s*$/i, "").trim();
+  const parts = [];
+  if (lying != null && lying > 0) {
+    parts.push(`lying posture sustained for ${lying}s`);
+  }
+  if (r) parts.push(r);
+  if (conf != null && conf > 0) {
+    parts.push(`Confirmed for ${conf.toFixed(1)}s with reliable full-body tracking.`);
+  }
+  const out = parts.join(" ").replace(/\s+/g, " ").trim();
+  return out || row.Reason?.trim() || "—";
+}
+
+async function downloadIncidentClip(row, assetBase) {
+  const path = row.ClipUrl || `/api/dementia-action/incident-asset/${row.Id}/clip`;
+  const url = `${assetBase}${path}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`clip ${r.status}`);
+  const blob = await r.blob();
+  const a = document.createElement("a");
+  const href = URL.createObjectURL(blob);
+  a.href = href;
+  a.download = `${row.Id || "evidence"}_clip.mp4`;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
 /**
  * Action recognition console — aligned with dementia care monitoring prototype.
  */
@@ -159,7 +213,6 @@ export default function DementiaAction() {
   const [incidents, setIncidents] = useState([]);
   const [riskEvents, setRiskEvents] = useState([]);
   const [alertLog, setAlertLog] = useState([]);
-  const [selectedIncident, setSelectedIncident] = useState(null);
   const [soundManual, setSoundManual] = useState(false);
   const [apiErr, setApiErr] = useState("");
 
@@ -235,8 +288,8 @@ export default function DementiaAction() {
     try {
       const inc = await fetchDementiaIncidents(40);
       setIncidents(inc.data || []);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      toast.error(`Could not load abnormal captures: ${e.message || e}`, { duration: 5000 });
     }
   }, []);
 
@@ -249,6 +302,24 @@ export default function DementiaAction() {
       /* ignore */
     }
   }, []);
+
+  const clearServerCaptures = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Delete all abnormal captures on the server (snapshots, clips, and metadata)? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    try {
+      const out = await deleteAllDementiaIncidents();
+      toast.success(`Removed ${out.removed ?? 0} file(s) from incident storage.`, { duration: 4000 });
+      await refreshIncidents();
+      refreshLogs();
+    } catch (e) {
+      toast.error(e.message || String(e));
+    }
+  }, [refreshIncidents, refreshLogs]);
 
   useEffect(() => {
     refreshLogs();
@@ -276,6 +347,9 @@ export default function DementiaAction() {
 
   useEffect(() => {
     refreshIncidents();
+    if (tab !== "captures") return undefined;
+    const t = setInterval(refreshIncidents, 8000);
+    return () => clearInterval(t);
   }, [tab, refreshIncidents]);
 
   /* Do not revoke blob URLs in an effect cleanup tied to uploadObjectUrl — React 18 Strict Mode
@@ -1215,49 +1289,95 @@ export default function DementiaAction() {
       )}
 
       {tab === "captures" && (
-        <div className="dc-captures">
-          <button type="button" className="btn-secondary dc-refresh" onClick={refreshIncidents}>
-            Refresh list
-          </button>
+        <div className="dc-captures dc-captures-full">
+          <div className="dc-captures-toolbar">
+            <button type="button" className="btn-secondary" onClick={refreshIncidents}>
+              Refresh captures
+            </button>
+            <button type="button" className="btn-secondary" onClick={clearServerCaptures}>
+              Clear test captures
+            </button>
+          </div>
+          <h2 className="dc-captures-section-title">Recent captured moments</h2>
           {incidents.length === 0 ? (
             <p className="dc-muted">No confirmed abnormal captures yet.</p>
           ) : (
-            <ul className="dc-capture-list">
-              {incidents.map((row) => (
-                <li
-                  key={row.Id}
-                  className="dc-capture-card dc-capture-card--click"
-                  onClick={() => setSelectedIncident(row)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSelectedIncident(row);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className="dc-capture-title">
-                    {row.BehaviorType}{" "}
-                    <span className="dc-badge">{row.Severity}</span>
-                  </div>
-                  <div className="dc-capture-meta">
-                    {row.Time} — {row.Reason}
-                    <span className="dc-capture-hint"> · Open detail</span>
-                    {row.Metrics && row.Metrics.pose_visible_keypoints != null && (
-                      <>
-                        {" "}
-                        · pose_visible_keypoints {row.Metrics.pose_visible_keypoints}/17
-                      </>
-                    )}
-                  </div>
-                </li>
-              ))}
+            <ul className="dc-capture-cards">
+              {incidents.map((row) => {
+                const snapSrc = `${ASSET_BASE}${row.SnapshotUrl || `/api/dementia-action/incident-asset/${row.Id}/snapshot`}`;
+                const clipSrc = `${ASSET_BASE}${row.ClipUrl || `/api/dementia-action/incident-asset/${row.Id}/clip`}`;
+                const actionLabel = row.Action || row.BehaviorType || "—";
+                const fusionNote = row.Metrics?.fusion_reason;
+                return (
+                  <li key={row.Id} className="dc-capture-card-v2">
+                    <div className="dc-capture-card-v2-head">
+                      <h3 className="dc-capture-card-v2-title">
+                        {row.BehaviorType || "Abnormal capture"}{" "}
+                        <span className={severityClassName(row.Severity)}>{row.Severity}</span>
+                      </h3>
+                    </div>
+                    <div className="dc-capture-card-v2-body">
+                      <div className="dc-capture-snap-col">
+                        <div className="dc-capture-snap-frame">
+                          <img src={snapSrc} alt="" className="dc-capture-snap-img" loading="lazy" />
+                          <div className="dc-capture-snap-ribbon">Risk behavior detected · review clip</div>
+                          <div className="dc-capture-snap-caption">
+                            {actionLabel} ({row.Confidence ?? "—"} conf.)
+                          </div>
+                          <div className="dc-capture-snap-time">{row.Time}</div>
+                        </div>
+                      </div>
+                      <div className="dc-capture-detail-col">
+                        <div className="dc-capture-field">
+                          <div className="dc-capture-field-label">What happened</div>
+                          <p className="dc-capture-field-value">{captureWhatHappenedText(row)}</p>
+                        </div>
+                        <div className="dc-capture-field">
+                          <div className="dc-capture-field-label">Detected action</div>
+                          <p className="dc-capture-field-value">
+                            {actionLabel}{" "}
+                            <span className="dc-muted">
+                              ({row.Confidence != null ? `${row.Confidence}` : "—"} confidence)
+                            </span>
+                          </p>
+                        </div>
+                        <p className="dc-capture-activity-stats">{formatCaptureActivityStats(row.Metrics)}</p>
+                        <video
+                          className="dc-capture-clip"
+                          controls
+                          preload="metadata"
+                          src={clipSrc}
+                        >
+                          <track kind="captions" />
+                        </video>
+                        <div className="dc-capture-actions">
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => {
+                              downloadIncidentClip(row, ASSET_BASE).catch((e) =>
+                                toast.error(e.message || String(e))
+                              );
+                            }}
+                          >
+                            Download evidence clip
+                          </button>
+                        </div>
+                        {fusionNote ? (
+                          <p className="dc-capture-fusion-hint">{fusionNote}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
       )}
 
+      {tab !== "captures" && (
+      <>
       <div className="dc-metrics">
         <div className="dc-metric-card">
           <div className="dc-metric-label">LSTM action</div>
@@ -1395,6 +1515,8 @@ export default function DementiaAction() {
           </div>
         </div>
       </section>
+      </>
+      )}
 
       <section className="dc-alerts">
         <h2 className="dc-alerts-title">Caregiver alerts</h2>
@@ -1423,75 +1545,13 @@ export default function DementiaAction() {
             </button>
           )}
           <span className="dc-muted inline-hint">
-            Uses browser notifications when allowed. Server email: set{" "}
-            <code className="inline-code">DEMENTIA_CAREGIVER_EMAIL</code> (or{" "}
-            <code className="inline-code">CAREGIVER_ALERT_EMAIL</code>) and{" "}
-            <code className="inline-code">SMTP_*</code> — sent automatically when an incident is saved; pose
-            lines are included in the message body.
+            Confirmed abnormal captures use local sound and browser notifications when enabled. Server email:
+            set <code className="inline-code">DEMENTIA_CAREGIVER_EMAIL</code> (or{" "}
+            <code className="inline-code">CAREGIVER_ALERT_EMAIL</code>) and <code className="inline-code">SMTP_*</code>{" "}
+            — sent when an incident is saved; pose lines are included in the message body.
           </span>
         </div>
       </section>
-
-      {selectedIncident && (
-        <div
-          className="dc-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="dc-modal-title"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setSelectedIncident(null);
-          }}
-        >
-          <div className="dc-modal">
-            <div className="dc-modal-head">
-              <h3 id="dc-modal-title">{selectedIncident.BehaviorType || "Incident"}</h3>
-              <button type="button" className="btn-secondary" onClick={() => setSelectedIncident(null)}>
-                Close
-              </button>
-            </div>
-            <div className="dc-modal-body">
-              {selectedIncident.SnapshotUrl || selectedIncident.Id ? (
-                <img
-                  src={`${ASSET_BASE}${selectedIncident.SnapshotUrl || `/api/dementia-action/incident-asset/${selectedIncident.Id}/snapshot`}`}
-                  alt="Incident snapshot"
-                  className="dc-modal-img"
-                />
-              ) : null}
-              {selectedIncident.ClipUrl || selectedIncident.Id ? (
-                <video
-                  src={`${ASSET_BASE}${selectedIncident.ClipUrl || `/api/dementia-action/incident-asset/${selectedIncident.Id}/clip`}`}
-                  controls
-                  className="dc-modal-video"
-                >
-                  <track kind="captions" />
-                </video>
-              ) : null}
-              <dl className="dc-modal-dl">
-                <div>
-                  <dt>Time</dt>
-                  <dd>{selectedIncident.Time}</dd>
-                </div>
-                <div>
-                  <dt>Detected action</dt>
-                  <dd>{selectedIncident.Action}</dd>
-                </div>
-                <div>
-                  <dt>Confidence</dt>
-                  <dd>{selectedIncident.Confidence}</dd>
-                </div>
-                <div>
-                  <dt>Severity</dt>
-                  <dd>{selectedIncident.Severity}</dd>
-                </div>
-                <div className="dc-modal-dl-full">
-                  <dt>Reason</dt>
-                  <dd>{selectedIncident.Reason}</dd>
-                </div>
-              </dl>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
