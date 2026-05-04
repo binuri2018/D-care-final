@@ -81,7 +81,7 @@ export default function MedicalForm({ value, onChange, disabled }) {
         <div className="tag">MRI slice (optional)</div>
         <p style={{ color: "var(--muted)", fontSize: "0.88rem", margin: "8px 0 10px", lineHeight: 1.45 }}>
           Upload one axial (or single) brain MRI slice as PNG or JPEG. When a trained{" "}
-          <code style={{ fontSize: "0.85em" }}>best_mri_model.keras</code> is on the server, we run the same
+          <code style={{ fontSize: "0.85em" }}>mri_dementia_model.keras</code> is on the server, we run the same
           MobileNetV2 head as your notebook and map severity to imaging fields below. MMSE and medication
           must still be entered from the chart. True mm³ / lesion load need full volumetric pipelines — these
           numbers are <strong>form proxies</strong> for the fusion model.

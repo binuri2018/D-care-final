@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+from cognitive_screening.services.mri_keras_load import load_mri_keras_model
 
 MRI_LABELS = {
     0: "Non-Demented",
@@ -23,57 +29,37 @@ MRI_RISK_MAP = {
 }
 
 
-def load_interpreter(model_path: Path):
+def preprocess_image_path(image_path: Path) -> np.ndarray:
+    im = Image.open(image_path).convert("RGB")
+    im = im.resize((224, 224), Image.Resampling.BILINEAR)
+    rgb = np.asarray(im, dtype=np.float32)
     try:
-        import tensorflow as tf
+        import tensorflow as tf  # noqa: PLC0415
 
-        return tf.lite.Interpreter(model_path=str(model_path))
+        x = tf.keras.applications.mobilenet_v2.preprocess_input(rgb)
+        return np.expand_dims(np.asarray(x, dtype=np.float32), axis=0)
     except Exception:
-        try:
-            from tflite_runtime.interpreter import Interpreter
-
-            return Interpreter(model_path=str(model_path))
-        except Exception as exc:
-            raise RuntimeError(
-                "Could not import TensorFlow Lite runtime. Install tensorflow or tflite-runtime."
-            ) from exc
-
-
-def preprocess_image(image_path: Path, input_shape):
-    target_h = int(input_shape[1])
-    target_w = int(input_shape[2])
-
-    image = Image.open(image_path).convert("L")
-    image = image.resize((target_w, target_h), Image.BILINEAR)
-    grayscale = np.asarray(image).astype(np.float32)
-    rgb = np.stack([grayscale, grayscale, grayscale], axis=-1)
-    rgb = (rgb / 127.5) - 1.0  # MobileNetV2 preprocessing [-1, 1]
-    return np.expand_dims(rgb, axis=0).astype(np.float32)
+        return np.expand_dims(rgb / 127.5 - 1.0, axis=0)
 
 
 def to_probabilities(output: np.ndarray) -> np.ndarray:
-    output = output.astype(np.float32)
-    if output.ndim > 1:
-        output = output[0]
-
+    output = np.asarray(output, dtype=np.float32).reshape(-1)
+    if output.size == 0:
+        raise RuntimeError("Model output is empty.")
     min_v = float(np.min(output))
     max_v = float(np.max(output))
     s = float(np.sum(output))
-
     if min_v >= 0.0 and max_v <= 1.0 and abs(s - 1.0) <= 1e-2:
         return output
-
     shifted = output - np.max(output)
-    exp = np.exp(shifted)
+    exp = np.exp(np.clip(shifted, -50.0, 50.0))
     return exp / np.sum(exp)
 
 
 class MriWorkerState:
     def __init__(self, model_path: Path):
         self.model_path = model_path
-        self.interpreter = None
-        self.input_details = None
-        self.output_details = None
+        self.model = None
         self.ready = False
         self.error = None
         self.load_ms = None
@@ -83,43 +69,32 @@ class MriWorkerState:
         try:
             if not self.model_path.exists():
                 raise FileNotFoundError(f"MRI model not found: {self.model_path}")
-
-            self.interpreter = load_interpreter(self.model_path)
-            self.interpreter.allocate_tensors()
-            self.input_details = self.interpreter.get_input_details()
-            self.output_details = self.interpreter.get_output_details()
-
-            if len(self.input_details) != 1 or len(self.output_details) == 0:
-                raise RuntimeError("Unexpected tensor layout in TFLite model.")
-
+            self.model = load_mri_keras_model(self.model_path)
             self.ready = True
             self.error = None
         except Exception as exc:
             self.ready = False
+            self.model = None
             self.error = str(exc)
         finally:
             self.load_ms = int((time.time() - started) * 1000)
 
     def predict(self, image_path: Path):
-        if not self.ready or self.interpreter is None:
+        if not self.ready or self.model is None:
             raise RuntimeError(self.error or "Worker is not ready")
         if not image_path.exists():
             raise FileNotFoundError(f"MRI image not found: {image_path}")
 
-        input_info = self.input_details[0]
-        input_data = preprocess_image(image_path, input_info["shape"])
-
-        self.interpreter.set_tensor(input_info["index"], input_data)
-        self.interpreter.invoke()
-        output = self.interpreter.get_tensor(self.output_details[0]["index"])
-        probs = to_probabilities(output)
+        batch = preprocess_image_path(image_path)
+        raw = np.asarray(self.model.predict(batch, verbose=0), dtype=np.float64)
+        probs = to_probabilities(raw)
 
         class_id = int(np.argmax(probs))
         confidence = float(probs[class_id])
 
         return {
             "classId": class_id,
-            "classLabel": MRI_LABELS.get(class_id, "Unknown"),
+            "classLabel": MRI_LABELS.get(class_id, f"Class_{class_id}"),
             "confidence": round(confidence, 6),
             "mappedRisk": MRI_RISK_MAP.get(class_id, "unknown"),
         }
@@ -172,7 +147,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Persistent MRI inference worker")
+    parser = argparse.ArgumentParser(description="Persistent MRI Keras inference worker")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8052)
     parser.add_argument("--model", required=True)

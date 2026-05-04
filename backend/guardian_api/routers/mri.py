@@ -44,7 +44,7 @@ async def mri_upload(
 ):
     patient_oid = await _patient_for_mri(user, patientId)
     mri_path, _ = settings_paths(settings, BACKEND_ROOT)
-    if not mri_path.is_file():
+    if not mri_path.is_file() and not mri_path.is_dir():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"MRI model not found at {mri_path}",

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""MRI Keras inference for Dementia Guardian (same weights/preprocess as cognitive screening MRI)."""
 import argparse
 import json
 import sys
@@ -6,6 +7,11 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+from cognitive_screening.services.mri_keras_load import load_mri_keras_model
 
 MRI_LABELS = {
     0: "Non-Demented",
@@ -22,61 +28,32 @@ MRI_RISK_MAP = {
 }
 
 
-def load_interpreter(model_path: Path):
+def preprocess_image_path(image_path: Path) -> np.ndarray:
+    im = Image.open(image_path).convert("RGB")
+    im = im.resize((224, 224), Image.Resampling.BILINEAR)
+    rgb = np.asarray(im, dtype=np.float32)
     try:
-        import tensorflow as tf
+        import tensorflow as tf  # noqa: PLC0415
 
-        interpreter = tf.lite.Interpreter(model_path=str(model_path))
-        return interpreter
+        x = tf.keras.applications.mobilenet_v2.preprocess_input(rgb)
+        return np.expand_dims(np.asarray(x, dtype=np.float32), axis=0)
     except Exception:
-        try:
-            from tflite_runtime.interpreter import Interpreter
-
-            interpreter = Interpreter(model_path=str(model_path))
-            return interpreter
-        except Exception as exc:
-            raise RuntimeError(
-                "Could not import TensorFlow Lite runtime. Install tensorflow or tflite-runtime."
-            ) from exc
-
-
-def preprocess_image(image_path: Path, input_shape):
-    # Expected shape is [1, 224, 224, 3]
-    target_h = int(input_shape[1])
-    target_w = int(input_shape[2])
-
-    image = Image.open(image_path).convert("L")
-    image = image.resize((target_w, target_h), Image.BILINEAR)
-
-    grayscale = np.asarray(image).astype(np.float32)
-    rgb = np.stack([grayscale, grayscale, grayscale], axis=-1)
-
-    # MobileNetV2 preprocessing: scale to [-1, 1]
-    rgb = (rgb / 127.5) - 1.0
-    rgb = np.expand_dims(rgb, axis=0).astype(np.float32)
-    return rgb
+        return np.expand_dims(rgb / 127.5 - 1.0, axis=0)
 
 
 def to_probabilities(output: np.ndarray) -> np.ndarray:
-    output = output.astype(np.float32)
-    if output.ndim > 1:
-        output = output[0]
-
+    output = np.asarray(output, dtype=np.float32).reshape(-1)
     if output.size == 0:
         raise RuntimeError("Model output is empty.")
-
-    # If output is already probabilities, keep it; otherwise softmax.
     min_v = float(np.min(output))
     max_v = float(np.max(output))
     s = float(np.sum(output))
-
     if min_v >= 0.0 and max_v <= 1.0 and abs(s - 1.0) <= 1e-2:
         probs = output
     else:
         shifted = output - np.max(output)
-        exp = np.exp(shifted)
+        exp = np.exp(np.clip(shifted, -50.0, 50.0))
         probs = exp / np.sum(exp)
-
     return probs
 
 
@@ -86,38 +63,34 @@ def run(model_path: Path, image_path: Path):
     if not image_path.exists():
         raise FileNotFoundError(f"MRI image not found: {image_path}")
 
-    interpreter = load_interpreter(model_path)
-    interpreter.allocate_tensors()
+    try:
+        import tensorflow as tf  # noqa: PLC0415, F401
+    except Exception as exc:
+        raise RuntimeError(
+            "TensorFlow is required for MRI Keras inference. Install tensorflow in PYTHON_BIN's environment."
+        ) from exc
 
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    if len(input_details) != 1 or len(output_details) == 0:
-        raise RuntimeError("Unexpected tensor layout in TFLite model.")
-
-    input_info = input_details[0]
-    input_data = preprocess_image(image_path, input_info["shape"])
-
-    interpreter.set_tensor(input_info["index"], input_data)
-    interpreter.invoke()
-
-    output_data = interpreter.get_tensor(output_details[0]["index"])
-    probs = to_probabilities(output_data)
+    model = load_mri_keras_model(model_path)
+    batch = preprocess_image_path(image_path)
+    raw = np.asarray(model.predict(batch, verbose=0), dtype=np.float64)
+    probs = to_probabilities(raw)
 
     class_id = int(np.argmax(probs))
     confidence = float(probs[class_id])
+    label = MRI_LABELS.get(class_id, f"Class_{class_id}")
+    mapped = MRI_RISK_MAP.get(class_id, "unknown")
 
     return {
         "classId": class_id,
-        "classLabel": MRI_LABELS.get(class_id, "Unknown"),
+        "classLabel": label,
         "confidence": round(confidence, 6),
-        "mappedRisk": MRI_RISK_MAP.get(class_id, "unknown"),
+        "mappedRisk": mapped,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run MRI TFLite inference")
-    parser.add_argument("--model", required=True, help="Path to MRI .tflite model")
+    parser = argparse.ArgumentParser(description="Run MRI Keras (.keras) inference")
+    parser.add_argument("--model", required=True, help="Path to MRI .keras model")
     parser.add_argument("--image", required=True, help="Path to MRI image file")
 
     args = parser.parse_args()

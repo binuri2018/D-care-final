@@ -56,9 +56,20 @@ def resolve_path(base: Path, raw: str, default_rel: str) -> Path:
     return (base / path).resolve()
 
 
+def _default_mri_model_relative() -> str:
+    """Prefer on-disk Keras bundle or single file under cognitive_screening/ml_artifacts/."""
+    art = REPO_ROOT / "backend" / "cognitive_screening" / "ml_artifacts"
+    for name in ("mri_dementia_model.keras", "mri_dementia_model .keras"):
+        p = art / name
+        if p.is_file() or p.is_dir():
+            rel = p.relative_to(REPO_ROOT)
+            return rel.as_posix()
+    return "backend/cognitive_screening/ml_artifacts/mri_dementia_model.keras"
+
+
 def settings_paths(settings: Settings, backend_root: Path) -> tuple[Path, Path]:
     _ = backend_root
-    rel_mri = "Flutter_App-Dimentia-master/MRI_Data_set/mri_mobilenetv2_fp16.tflite"
+    rel_mri = _default_mri_model_relative()
     rel_clin = "Flutter_App-Dimentia-master/Clinical Model/clinical_xgb_model.joblib"
     mri = resolve_path(REPO_ROOT, settings.mri_tflite_path, rel_mri)
     clin = resolve_path(REPO_ROOT, settings.clinical_joblib_path, rel_clin)

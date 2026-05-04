@@ -66,7 +66,7 @@ async def run_clinical_subprocess(python_bin: str, model_path: Path, payload: di
 
     A separate subprocess + PYTHON_BIN often caused 502 on Windows when the API ran
     from a venv that had xgboost/sklearn but `python` on PATH did not. MRI inference
-    still uses a subprocess (see run_mri_subprocess).
+    uses the same in-thread pattern (see ``run_mri_subprocess``).
     """
     _ = python_bin  # kept for backward-compatible call sites
 
@@ -79,18 +79,22 @@ async def run_clinical_subprocess(python_bin: str, model_path: Path, payload: di
 
 
 async def run_mri_subprocess(python_bin: str, model_path: Path, image_path: Path) -> dict:
-    script = _GUARDIAN_ROOT / "ml" / "infer_mri.py"
-    out, err, code = await _communicate_infer(
-        python_bin,
-        script,
-        cwd=_GUARDIAN_ROOT,
-        stdin_payload=None,
-        extra_args=["--model", str(model_path), "--image", str(image_path)],
-    )
-    if code != 0:
-        msg = err.decode("utf-8", errors="replace") or out.decode("utf-8", errors="replace")
-        raise RuntimeError(msg or "mri inference failed")
-    return _parse_json_stdout(out, what="MRI inference")
+    """
+    Run MRI Keras inference in a worker thread using **this** interpreter.
+
+    Same rationale as ``run_clinical_subprocess``: on Windows, ``PYTHON_BIN`` often
+    pointed at a different Python without TensorFlow or without ``backend/`` on
+    ``sys.path``, which broke the old subprocess + ``infer_mri.py`` approach and led
+    to 500 errors that were hard to diagnose.
+    """
+    _ = python_bin  # kept for backward-compatible call sites
+
+    def _run_sync() -> dict:
+        from guardian_api.ml.infer_mri import run as mri_run
+
+        return mri_run(model_path, image_path)
+
+    return await asyncio.to_thread(_run_sync)
 
 
 def clinical_payload_from_form(body: dict) -> dict:

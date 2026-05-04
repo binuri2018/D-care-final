@@ -2,7 +2,7 @@
 MRI axial-slice analysis for the medical form.
 
 Matches the Colab notebook pipeline (MobileNetV2, 224×224, preprocess_input) when
-`best_mri_model.keras` in ``backend/cognitive_screening/ml_artifacts/`` (or set ``MRI_MODEL_PATH``).
+``mri_dementia_model.keras`` is in ``backend/cognitive_screening/ml_artifacts/`` (or set ``MRI_MODEL_PATH``).
 
 Real volumetry (mm³, mm) is not recovered from a single 2D slice — we map the 4-class
 dementia-severity head to *proxy* values aligned with the synthetic feature ranges used by M / R / I.
@@ -41,11 +41,21 @@ _MODEL: Any = None
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
+def _ml_artifacts_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "ml_artifacts"
+
+
 def default_model_path() -> Path:
     env = os.environ.get("MRI_MODEL_PATH")
     if env:
         return Path(env)
-    return Path(__file__).resolve().parents[1] / "ml_artifacts" / "best_mri_model.keras"
+    art = _ml_artifacts_dir()
+    # Single-file .keras (zip) or Keras 3 on-disk bundle directory; second name is a common Windows save quirk.
+    for name in ("mri_dementia_model.keras", "mri_dementia_model .keras"):
+        p = art / name
+        if p.is_file() or p.is_dir():
+            return p
+    return art / "mri_dementia_model.keras"
 
 
 def _load_keras_model():
@@ -53,12 +63,12 @@ def _load_keras_model():
     if _MODEL is not None:
         return _MODEL
     path = default_model_path()
-    if not path.is_file():
+    if not path.is_file() and not path.is_dir():
         return None
     try:
-        import tensorflow as tf  # noqa: PLC0415
+        from .mri_keras_load import load_mri_keras_model
 
-        _MODEL = tf.keras.models.load_model(path, compile=False)
+        _MODEL = load_mri_keras_model(path)
     except Exception:
         _MODEL = None
         return None
@@ -136,20 +146,25 @@ def analyze_mri_image_bytes(data: bytes) -> dict[str, Any]:
     if model is not None:
         x = _preprocess_mobilenet(rgb)
         batch = np.expand_dims(x, axis=0)
-        probs = np.asarray(model.predict(batch, verbose=0), dtype=np.float64).reshape(4)
+        probs = np.asarray(model.predict(batch, verbose=0), dtype=np.float64).ravel()
+        if probs.size != 4:
+            raise ValueError(
+                f"MRI model must output 4 class scores (logits or probabilities); got length {probs.size}."
+            )
         probs = np.clip(probs, 1e-8, 1.0)
         probs = probs / probs.sum()
         method = "keras_model"
         note = (
-            "Predictions from your trained MobileNetV2 head (4-class). Values below are *proxies* "
-            "for the medical form, not true mm³ / radiology reads."
+            "Predictions from mri_dementia_model.keras (4-class head, MobileNetV2-style preprocess). "
+            "Values below are *proxies* for the medical form, not true mm³ / radiology reads."
         )
     else:
         probs = _heuristic_probs(rgb)
         method = "heuristic_fallback"
         note = (
-            "No Keras weights found (copy best_mri_model.keras to backend/ml_artifacts/ and install "
-            "TensorFlow). Using a rough image-statistics fallback — not for clinical use."
+            "No Keras weights found (place mri_dementia_model.keras in cognitive_screening/ml_artifacts/ "
+            "or set MRI_MODEL_PATH; install TensorFlow). Using a rough image-statistics fallback — "
+            "not for clinical use."
         )
 
     argmax = int(np.argmax(probs))
