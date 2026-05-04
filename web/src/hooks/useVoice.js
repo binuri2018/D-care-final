@@ -1,19 +1,60 @@
 // src/hooks/useVoice.js
 import { useState, useCallback, useRef } from 'react';
 
+/** Avoid Windows/Edge default male voices (e.g. Microsoft David) when picking en-US TTS. */
+const MALE_VOICE_HINT = /\b(David|Mark|Fred|James|John|Thomas|George|Guy|Brian|Aaron)\b|\bMale\b|\(Male\)/i;
+const FEMALE_VOICE_HINT = /\b(Zira|Samantha|Karen|Victoria|Susan|Aria|Jenny|Michelle|Fiona)\b|\bFemale\b|Google US English|English \(United States\).*Female/i;
+
+function pickReminderTtsVoice(voices) {
+  if (!voices?.length) return null;
+  const isEnUs = (v) => {
+    const l = (v.lang || '').replace('_', '-').toLowerCase();
+    return l === 'en-us' || l.startsWith('en-us');
+  };
+  const pool = voices.filter(isEnUs);
+  const list = pool.length ? pool : voices;
+
+  const femaleOrNeutral = list.find(
+    (v) => FEMALE_VOICE_HINT.test(v.name || '') && !MALE_VOICE_HINT.test(v.name || '')
+  );
+  if (femaleOrNeutral) return femaleOrNeutral;
+
+  const googleNonMale = list.find((v) => (v.name || '').includes('Google') && !MALE_VOICE_HINT.test(v.name || ''));
+  if (googleNonMale) return googleNonMale;
+
+  const anyNonMale = list.find((v) => !MALE_VOICE_HINT.test(v.name || ''));
+  if (anyNonMale) return anyNonMale;
+
+  return list[0] || voices[0];
+}
+
+const speakDedupeUntil = new Map();
+
 export const speakReminder = (text, options = {}) => {
   const synth = window.speechSynthesis;
   if (!synth || !text?.trim()) return false;
 
+  const dedupeKey = options.dedupeKey;
+  const dedupeMs = options.dedupeMs ?? 120000;
+  if (dedupeKey) {
+    const until = speakDedupeUntil.get(dedupeKey);
+    if (until != null && Date.now() < until) return true;
+    speakDedupeUntil.set(dedupeKey, Date.now() + dedupeMs);
+  }
+
+  // Single-flight: lazy voice loading + voiceschanged + fallback timer must not queue two utterances.
+  let spoken = false;
+
   const speakNow = () => {
+    if (spoken) return false;
+    spoken = true;
+
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = options.rate || 0.95;
     utter.pitch = options.pitch || 1.1;
     utter.volume = options.volume || 1;
     const voices = synth.getVoices();
-    const preferred = voices.find(v => v.name.includes('Google') && v.lang === 'en-US')
-      || voices.find(v => v.lang === 'en-US')
-      || voices[0];
+    const preferred = pickReminderTtsVoice(voices);
     if (preferred) utter.voice = preferred;
     if (typeof options.onEnd === 'function') utter.onend = () => options.onEnd();
     if (typeof options.onError === 'function') utter.onerror = (e) => options.onError(e);
@@ -30,16 +71,27 @@ export const speakReminder = (text, options = {}) => {
   const voices = synth.getVoices();
   if (voices.length > 0) return speakNow();
 
-  // Some browsers load voices lazily; retry when they become available.
-  let handled = false;
-  const trySpeak = () => {
-    if (handled) return;
-    handled = true;
-    speakNow();
-    synth.removeEventListener?.("voiceschanged", trySpeak);
+  // Voices load asynchronously: one path only (first event or fallback), both guarded by `spoken`.
+  let fallbackId = null;
+  const cleanup = () => {
+    synth.removeEventListener?.("voiceschanged", onVoices);
+    if (fallbackId != null) {
+      clearTimeout(fallbackId);
+      fallbackId = null;
+    }
   };
-  synth.addEventListener?.("voiceschanged", trySpeak);
-  setTimeout(trySpeak, 300);
+
+  const onVoices = () => {
+    cleanup();
+    speakNow();
+  };
+
+  synth.addEventListener?.("voiceschanged", onVoices);
+  fallbackId = setTimeout(() => {
+    cleanup();
+    speakNow();
+  }, 600);
+
   return true;
 };
 

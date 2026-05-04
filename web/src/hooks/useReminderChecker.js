@@ -1,5 +1,5 @@
 // src/hooks/useReminderChecker.js
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { speakReminder } from "./useVoice";
 import { updateReminder, completeReminder } from "../firebase/reminders";
 import { sendReminderToBackend } from "../services/reminderDispatchApi";
@@ -7,6 +7,9 @@ import toast from "react-hot-toast";
 
 const recentlyHandledAt = new Map();
 const RECENTLY_HANDLED_WINDOW_MS = 120000;
+
+// One toast + TTS per reminder occurrence (id + due instant). Survives Strict Mode / remount; ref-based Set did not.
+const reminderNotifiedForDue = new Set();
 
 // ─────────────────────────────────────────
 // Mark Done (Supports Repeat)
@@ -137,8 +140,6 @@ const listenForDoneCommand = (reminder, getToastId, micStopRef) => {
 // MAIN CHECKER
 // ─────────────────────────────────────────
 export const useReminderChecker = (reminders, mode, onDispatchStatus) => {
-  const notifiedRef = useRef(new Set());
-
   useEffect(() => {
     const check = async () => {
       const now = new Date();
@@ -165,8 +166,9 @@ export const useReminderChecker = (reminders, mode, onDispatchStatus) => {
 
         // Trigger reminder
         if (diff <= 0 && diff > -300000) {
-          if (notifiedRef.current.has(reminder.id)) continue;
-          notifiedRef.current.add(reminder.id);
+          const dueKey = `${reminder.id}:${new Date(reminder.dueDate).getTime()}`;
+          if (reminderNotifiedForDue.has(dueKey)) continue;
+          reminderNotifiedForDue.add(dueKey);
 
           const desc = reminder.description ? ` Description: ${reminder.description}.` : '';
           const micStopRef = { current: null };
@@ -203,6 +205,8 @@ export const useReminderChecker = (reminders, mode, onDispatchStatus) => {
             const spoke = speakReminder(
               `Reminder: ${reminder.title}.${desc} Say done or tap the Done button.`,
               {
+                dedupeKey: dueKey,
+                dedupeMs: 120000,
                 onError: () => {
                   toast.error("Speaker alert failed. Use the Mark as Done button.");
                 },
