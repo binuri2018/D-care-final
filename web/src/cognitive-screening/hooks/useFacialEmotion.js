@@ -54,7 +54,19 @@ export function defaultAnalyzeFrame(canvas, ctx) {
       emotion = e;
     }
   }
-  return { emotion, confusion_score: Math.round(confusion) };
+  const confusion01 = Math.max(0, Math.min(1, confusion / 100));
+  let confusion_level = "low";
+  if (confusion01 >= 0.65) confusion_level = "high";
+  else if (confusion01 >= 0.35) confusion_level = "medium";
+  return {
+    emotion,
+    confusion_score: Number(confusion01.toFixed(4)),
+    confusion_level,
+    source: "client_heuristic",
+    predicted_label: null,
+    model_confidence: null,
+    raw_model_label: null,
+  };
 }
 
 export function useFacialEmotion({ enable, intervalMs = 1500, onFrame, analyzeFrame }) {

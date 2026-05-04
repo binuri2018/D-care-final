@@ -410,11 +410,19 @@ export default function ClinicianResultsPanel({
               <p>{beh.reaction_behavior}</p>
             </div>
             <div>
-              <label>facial</label>
+              <label>facial (YOLO best.pt → score)</label>
               <div className="bar">
                 <i style={{ width: `${beh.facial_score || 0}%` }} />
               </div>
               <p>{beh.facial_score}</p>
+              {beh.details?.facial?.avg_confusion != null && (
+                <p style={{ margin: "0.25rem 0 0", fontSize: 12, color: "var(--muted)" }}>
+                  Webcam avg confusion intensity (0–1): {beh.details.facial.avg_confusion}
+                  {beh.details.facial.best_pt_frames != null
+                    ? ` · frames from best.pt: ${beh.details.facial.best_pt_frames}/${beh.details.facial.frames}`
+                    : ""}
+                </p>
+              )}
             </div>
             <div>
               <label>speech</label>

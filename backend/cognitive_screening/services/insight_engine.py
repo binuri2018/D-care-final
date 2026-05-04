@@ -233,11 +233,16 @@ def _anxiety_like(
     if avg_conf is not None:
         try:
             f = float(avg_conf)
-            if f >= 45:
-                evidence.append(f"Average facial-confusion score {f:.0f}/100 (looks distressed/uncertain).")
+            # ``avg_confusion`` is mean facial confusion intensity in 0..1 (YOLO ``best.pt`` frames).
+            if f >= 0.45:
+                evidence.append(
+                    f"Average webcam facial-confusion intensity {f:.2f} (0–1; looks distressed/uncertain)."
+                )
                 score += 1
-            elif f >= 30:
-                evidence.append(f"Facial-confusion score {f:.0f}/100 (mildly uncertain).")
+            elif f >= 0.30:
+                evidence.append(
+                    f"Webcam facial-confusion intensity {f:.2f} (0–1; mildly uncertain)."
+                )
                 score += 0.5
         except (TypeError, ValueError):
             pass

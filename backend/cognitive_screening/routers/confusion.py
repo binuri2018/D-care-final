@@ -1,4 +1,4 @@
-"""Webcam JPEG frame -> confusion score (YOLOv8 when weights present)."""
+"""Webcam JPEG frame → YOLO ``best.pt`` facial confusion (standard JSON, see ``confusion_yolo``)."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ async def analyze_confusion_frame(file: UploadFile = File(...)) -> dict:
         raise HTTPException(400, "Upload an image (JPEG or PNG).")
     try:
         out = analyze_confusion_frame_bytes(data)
-        # Return 200 even when YOLO weights are missing: body already has neutral
-        # emotion/score + `note` for ops; 503 would fail fetch() every webcam frame.
+        # Always 200 for valid image uploads so high-frequency webcam polling is not
+        # treated as HTTP errors; check JSON ``ok`` for YOLO availability.
         return out
     except ValueError as e:
         if str(e) == "file_too_large":

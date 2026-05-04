@@ -1,8 +1,18 @@
-# MRI model weights (optional)
+# Optional ML weights in this folder
 
-Place your trained **`best_mri_model.keras`** here (export from Colab: `mri_artifacts/best_mri_model.keras` in `MRI Model.ipynb`).
+## MRI (Keras)
 
-- Set **`MRI_MODEL_PATH`** to override the default path.
+Place **`mri_dementia_model.keras`** (single file or Keras 3 bundle directory) here, or set **`MRI_MODEL_PATH`**.
+
 - Install TensorFlow for inference: `pip install tensorflow-cpu` (or `tensorflow` with GPU).
+- Without weights the MRI endpoint uses a **heuristic fallback** (demo only).
 
-Without this file the API still runs using a **heuristic fallback** on the uploaded slice (demo only).
+## Webcam confusion (YOLO)
+
+Place Ultralytics **`best.pt`** anywhere under this directory (for example `ml_artifacts/my_run/best.pt`), or use:
+
+- `ml_artifacts/best.pt`
+- `ml_artifacts/confusion_yolo/best.pt`
+- repo `data/confusion_model/best.pt`
+
+Override with env **`CONFUSION_YOLO_PATH`**. Install **`pip install ultralytics`**.

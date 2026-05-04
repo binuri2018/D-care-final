@@ -4,7 +4,8 @@ Phase-2 behavioral aggregation - clinically grounded version.
 Inputs (collected during Phase 1):
 - behavioral_logs: list of {questionId, reaction_time_ms, attempts,
                             delay_ms, hesitation_ms?, correct?}
-- facial_data:     list of {emotion, timestamp, confusion_score (0-100)}
+- facial_data:     list of {emotion, timestamp, confusion_score (0–1 from YOLO ``best.pt``;
+                            legacy 0–100 still accepted)}
 - speech_data:     list of {transcript?, hesitation_count?,
                             sentiment_score?, clarity_score?}
 
@@ -18,7 +19,18 @@ for the full bibliography.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Iterable
+
+log = logging.getLogger(__name__)
+
+
+def _behavior_debug_enabled() -> bool:
+    v = (os.environ.get("COGNITIVE_YOLO_DEBUG") or os.environ.get("DEBUG") or "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    return os.environ.get("ENVIRONMENT", "").strip().lower() in ("development", "dev")
 
 # ---------------------------------------------------------------------
 # Emotion -> "confusion equivalent" (0..100, higher = more confused)
@@ -146,25 +158,50 @@ def reaction_behavior_score(
 # ---------------------------------------------------------------------
 
 
+def _frame_confusion_intensity_0_1(f: dict[str, Any]) -> float:
+    """Normalize per-frame confusion to 0..1 (YOLO ``best.pt`` uses 0..1; legacy webcam used 0..100)."""
+    cs = f.get("confusion_score")
+    if cs is not None:
+        v = float(cs)
+        if v > 1.0:
+            return max(0.0, min(1.0, v / 100.0))
+        return max(0.0, min(1.0, v))
+    emo = str(f.get("emotion", "neutral")).lower()
+    legacy = float(EMOTION_TO_CONFUSION.get(emo, 15))
+    return max(0.0, min(1.0, legacy / 100.0))
+
+
 def facial_confusion_score(
     facial_data: list[dict[str, Any]],
 ) -> tuple[float, dict[str, float]]:
-    """Map per-frame emotions to confusion in 0..100, then return
-    100 - mean. Higher = better (less confusion)."""
+    """Average YOLO confusion intensity (0..1), then facial channel score = 100·(1−mean).
+    Higher facial_score = less confusion (unchanged B contract)."""
     if not facial_data:
-        return 0.0, {"avg_confusion": 0.0, "frames": 0}
-    confusions: list[float] = []
+        return 0.0, {
+            "avg_confusion": 0.0,
+            "avg_confusion_pct": 0.0,
+            "frames": 0,
+            "best_pt_frames": 0,
+        }
+    intensities: list[float] = []
+    best_pt_frames = 0
     for f in facial_data:
-        if "confusion_score" in f and f["confusion_score"] is not None:
-            confusions.append(float(f["confusion_score"]))
-        else:
-            emo = str(f.get("emotion", "neutral")).lower()
-            confusions.append(float(EMOTION_TO_CONFUSION.get(emo, 15)))
-    avg_conf = _safe_mean(confusions)
-    return float(max(0.0, min(100.0, 100.0 - avg_conf))), {
-        "avg_confusion": round(avg_conf, 2),
+        intensities.append(_frame_confusion_intensity_0_1(f))
+        src = str(f.get("source", "") or "")
+        if "best.pt" in src or src == "best.pt":
+            best_pt_frames += 1
+    avg_01 = _safe_mean(intensities)
+    facial_score = float(max(0.0, min(100.0, 100.0 * (1.0 - avg_01))))
+    meta = {
+        "avg_confusion": round(avg_01, 4),
+        "avg_confusion_pct": round(avg_01 * 100.0, 2),
         "frames": len(facial_data),
+        "best_pt_frames": best_pt_frames,
     }
+    if _behavior_debug_enabled():
+        log.info("[behavioral] avg_confusion from YOLO frames (0-1 mean): %s", meta["avg_confusion"])
+        log.info("[behavioral] facial_score from YOLO: %s", facial_score)
+    return facial_score, meta
 
 
 # ---------------------------------------------------------------------
@@ -327,6 +364,8 @@ def compute_B_phase2(
 
     B = w_reaction * rb + w_facial * facial + w_speech * speech_eff
     B = float(max(0.0, min(100.0, B)))
+    if _behavior_debug_enabled():
+        log.info("[fusion] B=%s includes YOLO facial_score=%s (weights reaction=%s facial=%s speech=%s)", B, facial, w_reaction, w_facial, w_speech)
     speech_meta = {
         **speech_meta,
         "conversation_agent_blend": conv_cs is not None,

@@ -81,8 +81,16 @@ class BehavioralLog(BaseModel):
 class FacialFrame(BaseModel):
     emotion: Optional[str] = None
     timestamp: Optional[str] = None
+    # YOLO ``best.pt`` intensity 0–1 (legacy sessions may still send 0–100; server normalizes).
     confusion_score: Optional[float] = Field(None, ge=0, le=100)
+    confusion_level: Optional[str] = Field(None, max_length=16)
     questionId: Optional[int] = None
+    predicted_label: Optional[str] = Field(None, max_length=200)
+    model_confidence: Optional[float] = Field(None, ge=0, le=1)
+    raw_model_label: Optional[str] = Field(None, max_length=200)
+    source: Optional[str] = Field(None, max_length=64)
+
+    model_config = {"extra": "ignore"}
 
 
 class SpeechSample(BaseModel):

@@ -93,7 +93,7 @@ export async function completeAssessment(payload) {
   return _post("/api/complete-assessment", payload);
 }
 
-/** Webcam JPEG blob → YOLO confusion (requires backend + best.pt + requirements-confusion). */
+/** Webcam JPEG blob → POST /api/analyze-confusion-frame (YOLO best.pt). See ``ok`` + 0–1 ``confusion_score``. */
 export async function analyzeConfusionWebcamFrame(blob) {
   const fd = new FormData();
   // Webcam Blobs sometimes have an empty `type`; multipart then looks non-image → 400 without this.
