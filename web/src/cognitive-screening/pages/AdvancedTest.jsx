@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   completeAssessment,
   defaultMedical,
+  isStaleSessionError,
   recordBehavior,
   startSession,
 } from "../api.js";
@@ -22,6 +23,10 @@ import {
   speak,
   speakAsync,
   stopSpeaking,
+  waitMs,
+  waitForSpeechSynthesisIdle,
+  getInsecureSpeechTransportWarning,
+  speechRecognitionErrorMessage,
   isSpeechSynthesisSupported,
 } from "../lib/voicePrompt.js";
 
@@ -31,8 +36,6 @@ import BusRouteTask from "../components/tasks/BusRouteTask.jsx";
 import FestivalMatchTask from "../components/tasks/FestivalMatchTask.jsx";
 import AttentionGameTask from "../components/tasks/AttentionGameTask.jsx";
 import ContextOrientationTask from "../components/tasks/ContextOrientationTask.jsx";
-import ConversationAgentTask from "../components/tasks/ConversationAgentTask.jsx";
-
 /**
  * Advanced cognitive screening flow — Sri-Lankan-context Adaptive
  * Cognitive Testing (ACT).
@@ -60,7 +63,6 @@ const TASK_LIST = [
   { id: "ctx_orient", label: "Orientation" },
   { id: "memory", label: "Memory (adaptive)" },
   { id: "attention", label: "Attention game" },
-  { id: "chat_agent", label: "Friendly chat" },
   { id: "fluency", label: "Verbal fluency" },
   { id: "market", label: "Pola memory" },
   { id: "bus", label: "Bus route logic" },
@@ -76,6 +78,12 @@ function taskIdToNumber(id) {
   const idx = TASK_LIST.findIndex((t) => t.id === id);
   return idx >= 0 ? idx + 1 : 0;
 }
+
+/** Pause webcam confusion sampling while Web Speech runs (avoids capture contention on Chromium). */
+const WEBCAM_PAUSED_FOR_SPEECH = new Set(["fluency", "picture", "conversation"]);
+
+/** Wait after TTS settles before starting Web Speech (ms). */
+const POST_TTS_LISTEN_DELAY_MS = 650;
 
 // Helpers retained from previous implementation (used by surviving tasks).
 function fluencyToPoints(uniqueCount) {
@@ -134,18 +142,46 @@ function CountdownRing({ remainingMs, totalMs, label }) {
   );
 }
 
-function MicStatus({ speech, label }) {
-  const cls = speech.error
-    ? "adv-mic adv-mic-err"
-    : speech.listening
-    ? "adv-mic adv-mic-on"
-    : "adv-mic";
-  const text = speech.error
-    ? `mic error: ${speech.error}`
-    : speech.listening
-    ? `${label || "listening"}…`
-    : "mic idle";
-  return <span className={cls}>{text}</span>;
+function MicStatus({ speech, voiceEnv, label }) {
+  const insecure = voiceEnv?.insecureWarning;
+  const unsupported = voiceEnv?.unsupportedBrowser;
+  if (unsupported) {
+    return (
+      <span className="adv-mic adv-mic-err" title="Web Speech API">
+        Voice input is supported only in Chrome or Edge.
+      </span>
+    );
+  }
+  if (speech.listening) {
+    return (
+      <span className="adv-mic adv-mic-on">
+        {label ? `${label}…` : "Listening"} — speak now
+        {insecure ? (
+          <span style={{ display: "block", fontSize: "0.78rem", fontWeight: 400, marginTop: 4, color: "var(--muted)" }}>
+            {insecure}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
+  if (insecure) {
+    return <span className="adv-mic adv-mic-err">{insecure}</span>;
+  }
+  if (speech.error) {
+    return (
+      <span className="adv-mic adv-mic-err" title={String(speech.error)}>
+        {speechRecognitionErrorMessage(speech.error)}
+      </span>
+    );
+  }
+  if (speech.softHint === "no-speech") {
+    return (
+      <span className="adv-mic adv-mic-err">
+        {speechRecognitionErrorMessage("no-speech")}
+      </span>
+    );
+  }
+  return <span className="adv-mic">Voice capture stopped (not listening)</span>;
 }
 
 // =====================================================================
@@ -252,6 +288,19 @@ export default function AdvancedTest() {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  const clearStaleSession = useCallback((source) => {
+    sessionIdRef.current = null;
+    setSessionId(null);
+    setTaskId("intro");
+    setErr(
+      "This screening session is no longer on the server (for example after an API restart or hot reload). Return to the welcome step and click **Start** again."
+    );
+    if (process.env.NODE_ENV === "development" && source) {
+      // eslint-disable-next-line no-console
+      console.info(`[screening] session cleared: ${source}`);
+    }
+  }, []);
   useEffect(() => {
     taskIdRef.current = taskId;
   }, [taskId]);
@@ -259,7 +308,10 @@ export default function AdvancedTest() {
   const confusionAnalyzeFrame = useMemo(() => createYoloConfusionAnalyzer(), []);
 
   const facial = useFacialEmotion({
-    enable: enableCam && sessionId != null,
+    enable:
+      enableCam &&
+      sessionId != null &&
+      !WEBCAM_PAUSED_FOR_SPEECH.has(taskId),
     intervalMs: 1500,
     analyzeFrame: confusionAnalyzeFrame,
     onFrame: useCallback(async (frame) => {
@@ -273,14 +325,30 @@ export default function AdvancedTest() {
         });
         setLogsCount((c) => ({ ...c, frames: c.frames + 1 }));
       } catch (e) {
-        // Surface the failure so we don't silently zero-out frames.
+        if (isStaleSessionError(e)) {
+          clearStaleSession("facial_frame");
+          return;
+        }
         // eslint-disable-next-line no-console
         console.warn("[facial_frame] post failed:", e?.message || e);
       }
-    }, []),
+    }, [clearStaleSession]),
   });
 
   const speech = useSpeechCapture();
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+
+  const speechVoiceEnv = useMemo(
+    () => ({
+      insecureWarning: getInsecureSpeechTransportWarning(),
+      unsupportedBrowser: !speech.supported,
+    }),
+    [speech.supported]
+  );
+
+  const [devVoiceTestOn, setDevVoiceTestOn] = useState(false);
+  const [devVoiceTranscript, setDevVoiceTranscript] = useState("");
 
   // pre-flight permissions
   const [permState, setPermState] = useState({ cam: "unknown", mic: "unknown", detail: "" });
@@ -313,8 +381,17 @@ export default function AdvancedTest() {
 
   const startAssessment = async () => {
     setErr(null);
+    stopSpeaking();
+    try {
+      speechRef.current?.stop();
+    } catch {
+      /* ignore */
+    }
+    setDevVoiceTestOn(false);
+    setDevVoiceTranscript("");
     try {
       const s = await startSession(patient?.fullName || null);
+      sessionIdRef.current = s.sessionId;
       setSessionId(s.sessionId);
       sessionStartRef.current = performance.now();
       setLogsCount({ answers: 0, behavior: 0, frames: 0, speech: 0 });
@@ -362,10 +439,14 @@ export default function AdvancedTest() {
         const newLevel = tracker.record(correct);
         if (id === "memory") setMemoryLevel(newLevel);
       } catch (e) {
+        if (isStaleSessionError(e)) {
+          clearStaleSession("cognitive_answer");
+          return;
+        }
         setErr(`Could not record answer: ${e.message}`);
       }
     },
-    [sessionId, tracker]
+    [sessionId, tracker, clearStaleSession]
   );
 
   const sendSpeechSample = useCallback(
@@ -384,11 +465,15 @@ export default function AdvancedTest() {
         await recordBehavior({ sessionId, speech_sample });
         setLogsCount((c) => ({ ...c, speech: c.speech + 1 }));
       } catch (e) {
+        if (isStaleSessionError(e)) {
+          clearStaleSession("speech_sample");
+          return;
+        }
         // eslint-disable-next-line no-console
         console.warn("[speech_sample] post failed:", e?.message || e);
       }
     },
-    [sessionId]
+    [sessionId, clearStaleSession]
   );
 
   // --- adapter for component tasks: they call onComplete -> we record + advance
@@ -421,22 +506,46 @@ export default function AdvancedTest() {
       setFluencyTimerMs(60000);
       setFluencyLiveText("");
       setFluencyAnimals(0);
+      fluencyStartRef.current = 0;
       if (voiceEnabled) {
         await speakAsync("Now name as many animals as you can in 60 seconds.");
       }
       if (cancelled) return;
+      stopSpeaking();
+      await waitMs(120);
+      await waitForSpeechSynthesisIdle(8000);
+      if (cancelled) return;
+      await waitMs(POST_TTS_LISTEN_DELAY_MS);
+      if (cancelled) return;
+      let res = await speechRef.current?.start?.("fluency");
+      if (!res?.ok && !cancelled) {
+        await waitMs(1000);
+        res = await speechRef.current?.start?.("fluency");
+      }
+      if (cancelled) return;
+      if (!res?.ok) {
+        clearInterval(fluencyTickRef.current);
+        setErr(res?.error || "Could not start voice capture for verbal fluency.");
+        await sendCognitiveAnswer({
+          id: "fluency", domain: "language", points: 0, max_points: 10, correct: false,
+        });
+        setTaskId("market");
+        return;
+      }
       fluencyStartRef.current = performance.now();
-      speech.start("fluency");
     })();
     fluencyTickRef.current = setInterval(() => {
-      if (!fluencyStartRef.current) return; // still waiting on TTS
+      if (!fluencyStartRef.current) return; // still waiting on TTS / priming
       const elapsed = performance.now() - fluencyStartRef.current;
       const remaining = Math.max(0, 60000 - elapsed);
       setFluencyTimerMs(remaining);
-      const live = (speech.interim || "").trim();
+      const live = (
+        speechRef.current?.transcript ||
+        speechRef.current?.interim ||
+        ""
+      ).trim();
       setFluencyLiveText(live);
-      const sample = countAnimalsInTranscript(live).unique_animals;
-      setFluencyAnimals(sample);
+      setFluencyAnimals(countAnimalsInTranscript(live).unique_animals);
       if (remaining <= 0) {
         clearInterval(fluencyTickRef.current);
         finishFluency();
@@ -445,11 +554,16 @@ export default function AdvancedTest() {
     return () => {
       cancelled = true;
       clearInterval(fluencyTickRef.current);
+      try {
+        speechRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
     };
   }, [taskId]);
 
   const finishFluency = async () => {
-    const sample = speech.stop();
+    const sample = speechRef.current?.stop();
     if (sample) {
       const { unique_animals } = countAnimalsInTranscript(sample.transcript || "");
       sample.unique_animals = unique_animals;
@@ -531,8 +645,28 @@ export default function AdvancedTest() {
         );
       }
       if (cancelled) return;
+      stopSpeaking();
+      await waitMs(120);
+      await waitForSpeechSynthesisIdle(8000);
+      if (cancelled) return;
+      await waitMs(POST_TTS_LISTEN_DELAY_MS);
+      if (cancelled) return;
+      let res = await speechRef.current?.start?.("picture");
+      if (!res?.ok && !cancelled) {
+        await waitMs(1000);
+        res = await speechRef.current?.start?.("picture");
+      }
+      if (cancelled) return;
+      if (!res?.ok) {
+        clearInterval(pictureTickRef.current);
+        setErr(res?.error || "Could not start voice capture for picture description.");
+        await sendCognitiveAnswer({
+          id: "picture", domain: "language", points: 0, max_points: 10, correct: false,
+        });
+        setTaskId("festival");
+        return;
+      }
       pictureStartRef.current = performance.now();
-      speech.start("picture");
     })();
     pictureTickRef.current = setInterval(() => {
       if (!pictureStartRef.current) return;
@@ -549,11 +683,16 @@ export default function AdvancedTest() {
     return () => {
       cancelled = true;
       clearInterval(pictureTickRef.current);
+      try {
+        speechRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
     };
   }, [taskId]);
 
   const finishPicture = async () => {
-    const sample = speech.stop();
+    const sample = speechRef.current?.stop();
     if (sample) {
       await sendSpeechSample(sample);
       const hesRatio = sample.word_count
@@ -587,8 +726,25 @@ export default function AdvancedTest() {
         );
       }
       if (cancelled) return;
+      stopSpeaking();
+      await waitMs(120);
+      await waitForSpeechSynthesisIdle(8000);
+      if (cancelled) return;
+      await waitMs(POST_TTS_LISTEN_DELAY_MS);
+      if (cancelled) return;
+      let res = await speechRef.current?.start?.("conversation");
+      if (!res?.ok && !cancelled) {
+        await waitMs(1000);
+        res = await speechRef.current?.start?.("conversation");
+      }
+      if (cancelled) return;
+      if (!res?.ok) {
+        clearInterval(convTickRef.current);
+        setErr(res?.error || "Could not start voice capture for life story.");
+        setTaskId("self");
+        return;
+      }
       convStartRef.current = performance.now();
-      speech.start("conversation");
     })();
     convTickRef.current = setInterval(() => {
       if (!convStartRef.current) return;
@@ -605,11 +761,16 @@ export default function AdvancedTest() {
     return () => {
       cancelled = true;
       clearInterval(convTickRef.current);
+      try {
+        speechRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
     };
   }, [taskId]);
 
   const finishConversation = async () => {
-    const sample = speech.stop();
+    const sample = speechRef.current?.stop();
     if (sample) await sendSpeechSample(sample);
     setTaskId("self");
   };
@@ -657,7 +818,11 @@ export default function AdvancedTest() {
       sessionStorage.setItem("lastResult", JSON.stringify(res));
       nav("/screening/results");
     } catch (e) {
-      setErr(`Could not finalize: ${e.message}`);
+      if (isStaleSessionError(e)) {
+        clearStaleSession("complete_assessment");
+      } else {
+        setErr(`Could not finalize: ${e.message}`);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -762,6 +927,70 @@ export default function AdvancedTest() {
                 </div>
               </div>
             </div>
+            {speechVoiceEnv.insecureWarning && (
+              <p className="err" style={{ marginTop: 12 }}>
+                {speechVoiceEnv.insecureWarning}
+              </p>
+            )}
+            {!speech.supported && (
+              <p className="err" style={{ marginTop: 12 }}>
+                Voice input is supported only in Chrome or Edge.
+              </p>
+            )}
+            {typeof process !== "undefined" &&
+              process.env.NODE_ENV === "development" &&
+              speech.supported && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    padding: 12,
+                    border: "1px dashed var(--border)",
+                    borderRadius: 10,
+                  }}
+                >
+                  <div className="tag">Developer — voice test</div>
+                  <p style={{ fontSize: "0.88rem", color: "var(--muted)", marginTop: 8 }}>
+                    Console shows <code>[speech]</code> logs: support, secure context, mic prime, recognition
+                    start/result/error/end, and restarts. Prefer <code>http://localhost:3000</code> for testing.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ marginTop: 8 }}
+                    onClick={async () => {
+                      setErr(null);
+                      if (devVoiceTestOn) {
+                        const s = speechRef.current?.stop();
+                        setDevVoiceTranscript((s?.transcript || "").trim() || "(empty transcript)");
+                        setDevVoiceTestOn(false);
+                        return;
+                      }
+                      stopSpeaking();
+                      await waitForSpeechSynthesisIdle(5000);
+                      const r = await speechRef.current?.start?.("__dev_voice_test__");
+                      if (!r?.ok) {
+                        setErr(r?.error || "Voice test failed to start.");
+                        return;
+                      }
+                      setDevVoiceTestOn(true);
+                      setDevVoiceTranscript("");
+                    }}
+                  >
+                    {devVoiceTestOn ? "Stop voice test" : "Test voice input"}
+                  </button>
+                  {devVoiceTestOn && (
+                    <p style={{ marginTop: 10, fontSize: "0.92rem" }}>
+                      <strong>Live:</strong>{" "}
+                      {(speech.transcript || speech.interim || "").trim() || "…"}
+                    </p>
+                  )}
+                  {devVoiceTranscript && !devVoiceTestOn && (
+                    <p style={{ marginTop: 10, fontSize: "0.92rem", color: "var(--muted)" }}>
+                      <strong>Last capture:</strong> {devVoiceTranscript}
+                    </p>
+                  )}
+                </div>
+              )}
             {(enableCam || enableSpeech) && (
               <div style={{ marginTop: 12 }}>
                 <button className="btn btn-ghost" type="button" onClick={requestMediaAccess}>
@@ -838,17 +1067,7 @@ export default function AdvancedTest() {
       {taskId === "attention" && (
         <AttentionGameTask
           voiceEnabled={voiceEnabled}
-          onComplete={onTaskComplete("chat_agent")}
-        />
-      )}
-
-      {taskId === "chat_agent" && sessionId && (
-        <ConversationAgentTask
-          sessionId={sessionId}
-          voiceEnabled={voiceEnabled}
-          speechQuestionId={taskIdToNumber("chat_agent")}
-          onDone={() => setTaskId("fluency")}
-          onError={(msg) => setErr(msg)}
+          onComplete={onTaskComplete("fluency")}
         />
       )}
 
@@ -874,7 +1093,7 @@ export default function AdvancedTest() {
                 <div className="adv-counter-num">{fluencyAnimals}</div>
                 <div className="adv-counter-label">unique animals</div>
               </div>
-              <MicStatus speech={speech} label="listening" />
+              <MicStatus speech={speech} voiceEnv={speechVoiceEnv} label="Listening" />
               {fluencyLiveText && (
                 <p style={{ color: "var(--muted)", marginTop: 8, maxWidth: 480 }}>
                   "{fluencyLiveText}"
@@ -964,10 +1183,10 @@ export default function AdvancedTest() {
           <div className="adv-flex-row" style={{ marginTop: 12 }}>
             <CountdownRing remainingMs={pictureTimerMs} totalMs={60000} label="describing" />
             <div>
-              <MicStatus speech={speech} label="listening" />
-              {speech.interim && (
+              <MicStatus speech={speech} voiceEnv={speechVoiceEnv} label="Listening" />
+              {(speech.transcript || speech.interim) && (
                 <p style={{ color: "var(--muted)", marginTop: 8, maxWidth: 480 }}>
-                  "{speech.interim}"
+                  "{(speech.transcript || speech.interim).trim()}"
                 </p>
               )}
             </div>
@@ -1003,10 +1222,10 @@ export default function AdvancedTest() {
           <div className="adv-flex-row" style={{ marginTop: 12 }}>
             <CountdownRing remainingMs={convTimerMs} totalMs={90000} label="talking" />
             <div>
-              <MicStatus speech={speech} label="listening" />
-              {speech.interim && (
+              <MicStatus speech={speech} voiceEnv={speechVoiceEnv} label="Listening" />
+              {(speech.transcript || speech.interim) && (
                 <p style={{ color: "var(--muted)", marginTop: 8, maxWidth: 480 }}>
-                  "{speech.interim}"
+                  "{(speech.transcript || speech.interim).trim()}"
                 </p>
               )}
             </div>
@@ -1128,7 +1347,7 @@ export default function AdvancedTest() {
                 <span className="pill">memory level: {memoryLevel + 1}</span>
               </div>
               <div style={{ marginTop: 8 }}>
-                <MicStatus speech={speech} />
+                <MicStatus speech={speech} voiceEnv={speechVoiceEnv} />
               </div>
             </div>
           </div>

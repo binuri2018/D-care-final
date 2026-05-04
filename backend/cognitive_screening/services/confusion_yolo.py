@@ -61,6 +61,19 @@ def _load_yolo():
     return _MODEL
 
 
+def _fallback_frame_response(note: str) -> dict[str, Any]:
+    """Non-fatal: bad JPEG, YOLO runtime error, etc. Caller returns HTTP 200."""
+    return {
+        "method": "yolo_fallback",
+        "emotion": "neutral",
+        "confusion_score": 14.0,
+        "predicted_class_id": None,
+        "predicted_label": None,
+        "confidence": 0.0,
+        "note": note,
+    }
+
+
 def _class_to_emotion_and_score(class_name: str, class_id: int) -> tuple[str, float]:
     """Map YOLO class to UI emotion + 0..100 confusion (behavior aggregation)."""
     n = (class_name or "").lower().strip()
@@ -103,36 +116,39 @@ def analyze_confusion_frame_bytes(data: bytes) -> dict[str, Any]:
             ),
         }
 
-    im = Image.open(io.BytesIO(data)).convert("RGB")
-    results = model.predict(source=im, conf=0.22, verbose=False)
-    names = getattr(results[0], "names", None) or {}
+    try:
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        results = model.predict(source=im, conf=0.22, verbose=False)
+        names = getattr(results[0], "names", None) or {}
 
-    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+            return {
+                "method": "yolo",
+                "emotion": "neutral",
+                "confusion_score": 14.0,
+                "predicted_class_id": None,
+                "predicted_label": None,
+                "confidence": 0.0,
+                "note": "No detection above threshold; treated as low confusion signal.",
+            }
+
+        boxes = results[0].boxes
+        confs = boxes.conf.cpu().numpy()
+        clss = boxes.cls.cpu().numpy().astype(int)
+        i = int(np.argmax(confs))
+        cls_id = int(clss[i])
+        conf = float(confs[i])
+        label = str(names.get(cls_id, f"class_{cls_id}"))
+        emotion, confusion = _class_to_emotion_and_score(label, cls_id)
+
         return {
             "method": "yolo",
-            "emotion": "neutral",
-            "confusion_score": 14.0,
-            "predicted_class_id": None,
-            "predicted_label": None,
-            "confidence": 0.0,
-            "note": "No detection above threshold; treated as low confusion signal.",
+            "emotion": emotion,
+            "confusion_score": float(round(min(100, max(0, confusion)), 1)),
+            "predicted_class_id": cls_id,
+            "predicted_label": label,
+            "confidence": conf,
+            "note": f"Inference from {_MODEL_PATH.name if _MODEL_PATH else 'weights'} (highest-confidence box).",
         }
-
-    boxes = results[0].boxes
-    confs = boxes.conf.cpu().numpy()
-    clss = boxes.cls.cpu().numpy().astype(int)
-    i = int(np.argmax(confs))
-    cls_id = int(clss[i])
-    conf = float(confs[i])
-    label = str(names.get(cls_id, f"class_{cls_id}"))
-    emotion, confusion = _class_to_emotion_and_score(label, cls_id)
-
-    return {
-        "method": "yolo",
-        "emotion": emotion,
-        "confusion_score": float(round(min(100, max(0, confusion)), 1)),
-        "predicted_class_id": cls_id,
-        "predicted_label": label,
-        "confidence": conf,
-        "note": f"Inference from {_MODEL_PATH.name if _MODEL_PATH else 'weights'} (highest-confidence box).",
-    }
+    except Exception as e:  # noqa: BLE001 — return soft response; do not 400-spam webcam clients
+        return _fallback_frame_response(f"Inference failed ({type(e).__name__}): {e!s}")

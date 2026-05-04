@@ -7,9 +7,14 @@ import {
   startSession,
 } from "../api.js";
 import { useFacialEmotion } from "../hooks/useFacialEmotion.js";
-import { useSpeechInput } from "../hooks/useSpeechInput.js";
+import { useSpeechCapture } from "../hooks/useSpeechCapture.js";
 import { createYoloConfusionAnalyzer } from "../lib/confusionFrameAnalyzer.js";
 import MedicalForm from "../components/MedicalForm.jsx";
+import {
+  getInsecureSpeechTransportWarning,
+  speechRecognitionErrorMessage,
+  waitMs,
+} from "../lib/voicePrompt.js";
 
 const QUESTIONS = [
   { id: 1, domain: "orientation", text: "What is today’s year?", options: ["2026", "2015", "1990", "Not sure"], correctIdx: 0 },
@@ -116,6 +121,8 @@ export default function MmseTest() {
   // Local mirror of phase-1 logs (for live UI; backend has the source of truth)
   const [logsCount, setLogsCount] = useState({ answers: 0, behavior: 0, frames: 0, speech: 0 });
 
+  const insecureVoiceWarning = useMemo(() => getInsecureSpeechTransportWarning(), []);
+
   const confusionAnalyzeFrame = useMemo(() => createYoloConfusionAnalyzer(), []);
 
   // Facial sampling — only runs while assessment is active and webcam toggle is on
@@ -138,7 +145,7 @@ export default function MmseTest() {
     ),
   });
 
-  const speech = useSpeechInput();
+  const speech = useSpeechCapture();
   const speechActive = enableSpeech && speech.supported && phase === "assessment";
 
   const startAssessment = async () => {
@@ -152,7 +159,13 @@ export default function MmseTest() {
       setStep(0);
       setLogsCount({ answers: 0, behavior: 0, frames: 0, speech: 0 });
       setPhase("assessment");
-      if (speech.supported && enableSpeech) speech.start();
+      await waitMs(50);
+      if (speech.supported && enableSpeech) {
+        const r = await speech.start("mmse");
+        if (!r?.ok) {
+          setErr(r?.error || "Could not start speech listening.");
+        }
+      }
     } catch (e) {
       setErr(`Could not start session: ${e.message}. Is the API running on :8000?`);
     }
@@ -366,6 +379,16 @@ export default function MmseTest() {
                 </div>
               </div>
             </div>
+            {insecureVoiceWarning && (
+              <p className="err" style={{ marginTop: 12 }}>
+                {insecureVoiceWarning}
+              </p>
+            )}
+            {!speech.supported && (
+              <p className="err" style={{ marginTop: 12 }}>
+                Voice input is supported only in Chrome or Edge.
+              </p>
+            )}
             {(enableCam || enableSpeech) && (
               <div style={{ marginTop: 12 }}>
                 <button
@@ -503,9 +526,27 @@ export default function MmseTest() {
                   <span className="pill">speech: {logsCount.speech}</span>
                 </div>
                 {speechActive && (
-                  <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 8 }}>
-                    🎙 listening… {speech.interim ? `“${speech.interim}”` : ""}
-                  </p>
+                  <div style={{ marginTop: 8 }}>
+                    <p style={{ color: "var(--muted)", fontSize: 13 }}>
+                      {speech.listening
+                        ? `🎙 Listening… ${
+                            (speech.transcript || speech.interim)
+                              ? `“${(speech.transcript || speech.interim).trim()}”`
+                              : "(speak now)"
+                          }`
+                        : "🎙 Voice capture paused — waiting for session"}
+                    </p>
+                    {speech.error && (
+                      <p className="err" style={{ fontSize: 13, marginTop: 6 }}>
+                        {speechRecognitionErrorMessage(speech.error)}
+                      </p>
+                    )}
+                    {speech.softHint === "no-speech" && !speech.error && (
+                      <p className="err" style={{ fontSize: 13, marginTop: 6 }}>
+                        {speechRecognitionErrorMessage("no-speech")}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

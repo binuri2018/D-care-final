@@ -3,7 +3,8 @@ import { defaultAnalyzeFrame } from "../hooks/useFacialEmotion.js";
 
 /**
  * Sends each webcam frame to POST /api/analyze-confusion-frame (YOLOv8 on the server).
- * On failure or missing weights (503), falls back to the local placeholder stats.
+ * On network / server errors only, falls back to the local placeholder stats.
+ * Missing YOLO weights return HTTP 200 with neutral scores from the API.
  */
 export function createYoloConfusionAnalyzer(options = {}) {
   const fallback = options.fallbackAnalyzeFrame || defaultAnalyzeFrame;

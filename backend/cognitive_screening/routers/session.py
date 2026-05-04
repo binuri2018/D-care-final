@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 
 from cognitive_screening.schemas import (
     CompleteAssessmentRequest,
@@ -30,7 +30,11 @@ def start_session(body: StartSessionRequest) -> StartSessionResponse:
 @router.post("/record-behavior")
 def record_behavior(body: RecordBehaviorRequest) -> dict:
     if not get_session(body.sessionId):
-        raise HTTPException(404, "Unknown sessionId. Call /api/start-session first.")
+        # 400 (not 404): route exists; id is missing from in-memory store (server reload, stale tab).
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Unknown sessionId. Call /api/start-session first.",
+        )
     snapshot = append_behavior(
         body.sessionId,
         cognitive_answer=body.cognitive_answer.model_dump() if body.cognitive_answer else None,
@@ -65,7 +69,10 @@ def read_session(sid: str) -> dict:
 def complete_assessment(body: CompleteAssessmentRequest) -> dict:
     s = get_session(body.sessionId)
     if not s:
-        raise HTTPException(404, "Unknown sessionId. Call /api/start-session first.")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Unknown sessionId. Call /api/start-session first.",
+        )
 
     medical_payload = {**(s.get("medicalData") or {}), **body.medical.model_dump()}
     try:

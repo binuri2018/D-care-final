@@ -58,6 +58,16 @@ export async function fetchMetrics() {
   return r.json();
 }
 
+/** POST /api/record-behavior rejected sessionId (API restarted, stale tab, etc.). */
+export function isStaleSessionError(err) {
+  const m = String(err?.message || err || "");
+  return (
+    m.includes("Unknown sessionId") ||
+    m.includes("session not found") ||
+    m.includes("Call /api/start-session first")
+  );
+}
+
 async function _post(path, body) {
   const r = await fetch(`${API}${path}`, {
     method: "POST",
@@ -86,7 +96,12 @@ export async function completeAssessment(payload) {
 /** Webcam JPEG blob → YOLO confusion (requires backend + best.pt + requirements-confusion). */
 export async function analyzeConfusionWebcamFrame(blob) {
   const fd = new FormData();
-  fd.append("file", blob, "frame.jpg");
+  // Webcam Blobs sometimes have an empty `type`; multipart then looks non-image → 400 without this.
+  const mime =
+    blob.type && String(blob.type).toLowerCase().startsWith("image/")
+      ? blob.type
+      : "image/jpeg";
+  fd.append("file", new File([blob], "frame.jpg", { type: mime }));
   const res = await fetch(`${API}/api/analyze-confusion-frame`, {
     method: "POST",
     body: fd,

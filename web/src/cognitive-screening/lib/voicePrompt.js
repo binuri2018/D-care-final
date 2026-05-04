@@ -19,6 +19,9 @@ const LANG_CODES = {
   ta: "ta-IN",
 };
 
+/** Web Speech API recognition language (change to "en-GB" if UK English works better). */
+export const SPEECH_RECOGNITION_LANG = "en-US";
+
 let cachedVoices = null;
 
 function loadVoices() {
@@ -99,4 +102,108 @@ export function stopSpeaking() {
   try {
     window.speechSynthesis.cancel();
   } catch {}
+}
+
+const isDev =
+  typeof process !== "undefined" && process.env.NODE_ENV === "development";
+
+export function devSpeechLog(...args) {
+  if (isDev) {
+    // eslint-disable-next-line no-console
+    console.log("[speech]", ...args);
+  }
+}
+
+export function isBrowserSpeechRecognitionAvailable() {
+  return (
+    typeof window !== "undefined" &&
+    !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+  );
+}
+
+/** True for https: or localhost / 127.0.0.1 / ::1 (typical safe dev URL). */
+export function isLocalhostOrHttps() {
+  if (typeof window === "undefined" || !window.location) return true;
+  const { protocol, hostname } = window.location;
+  if (protocol === "https:") return true;
+  const h = String(hostname || "").toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1") return true;
+  return false;
+}
+
+/**
+ * User-facing warning when the page is not served over HTTPS or localhost
+ * (e.g. http://192.168.x.x) — SpeechRecognition may be blocked or flaky.
+ */
+export function getInsecureSpeechTransportWarning() {
+  if (typeof window === "undefined") return null;
+  if (isLocalhostOrHttps()) return null;
+  return "Voice input may not work on insecure HTTP. Use localhost or HTTPS.";
+}
+
+export function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait until the browser is not playing TTS (or timeout). */
+export async function waitForSpeechSynthesisIdle(timeoutMs = 8000) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const t0 = performance.now();
+  while (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    if (performance.now() - t0 > timeoutMs) {
+      devSpeechLog("waitForSpeechSynthesisIdle: timeout");
+      break;
+    }
+    await waitMs(50);
+  }
+}
+
+/**
+ * Open and immediately release the default mic so the browser's audio input
+ * path is active before Web Speech API recognition — often required on
+ * Chrome/Edge (Windows) after TTS or idle tabs.
+ * @returns {{ ok: true } | { ok: false, message: string, code?: string }}
+ */
+export async function primeMicrophoneForRecognition() {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    const message = "Microphone API unavailable in this browser.";
+    devSpeechLog("primeMicrophone: no getUserMedia", message);
+    return { ok: false, message, code: "no-mediadevices" };
+  }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    s.getTracks().forEach((t) => t.stop());
+    devSpeechLog("primeMicrophone: ok");
+    return { ok: true };
+  } catch (e) {
+    const name = e?.name || "";
+    const denied = name === "NotAllowedError" || name === "PermissionDeniedError";
+    const message = denied
+      ? "Microphone permission was denied or unavailable."
+      : `Microphone permission was denied or unavailable. (${e?.message || name || "unknown"})`;
+    devSpeechLog("primeMicrophone: failed", name, e?.message);
+    return { ok: false, message, code: denied ? "mic-denied" : "mic-error" };
+  }
+}
+
+/** Human-readable copy for MicStatus / banners (code from SpeechRecognitionError). */
+export function speechRecognitionErrorMessage(code) {
+  switch (code) {
+    case "network":
+      return "Speech recognition needs internet or the browser STT service is blocked.";
+    case "not-allowed":
+      return "Microphone permission blocked. Allow mic access in browser settings.";
+    case "no-speech":
+      return "No speech detected. Try speaking closer to the mic.";
+    case "audio-capture":
+      return "No microphone device found or browser cannot capture audio.";
+    case "aborted":
+      return "Speech recognition was interrupted.";
+    case "service-not-allowed":
+      return "Speech service is blocked by browser, network, or policy.";
+    case "bad-grammar":
+      return "Speech recognition grammar is not supported.";
+    default:
+      return code ? `Speech recognition: ${code}` : "Speech recognition error.";
+  }
 }

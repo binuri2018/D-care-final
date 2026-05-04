@@ -1,4 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  stopSpeaking,
+  waitMs,
+  waitForSpeechSynthesisIdle,
+  primeMicrophoneForRecognition,
+  SPEECH_RECOGNITION_LANG,
+  devSpeechLog,
+  isBrowserSpeechRecognitionAvailable,
+  speechRecognitionErrorMessage,
+} from "../lib/voicePrompt.js";
+
+const isDev =
+  typeof process !== "undefined" && process.env.NODE_ENV === "development";
+
+/** Errors after which we must not auto-restart recognition. */
+const FATAL_SPEECH_RECOGNITION_ERRORS = new Set([
+  "network",
+  "not-allowed",
+  "service-not-allowed",
+  "audio-capture",
+]);
 
 /**
  * Robust per-task Web Speech API wrapper.
@@ -66,19 +87,12 @@ function meanLengthOfUtterance(text) {
   return lens.reduce((a, b) => a + b, 0) / lens.length;
 }
 
-/**
- * Repetition rate - fraction of consecutive bigrams (or unigrams) that
- * are exact repeats. Elevated repetition is a hallmark of semantic
- * dementia and Alzheimer's connected speech (Boschi 2017, Front Psychol;
- * Fraser 2016, J Alzheimers Dis).
- */
 function repetitionRate(tokens) {
   if (tokens.length < 2) return 0;
   let rep = 0;
   for (let i = 1; i < tokens.length; i++) {
     if (tokens[i] === tokens[i - 1]) rep++;
   }
-  // Also count short bigram echoes ("the the", "I I went went").
   let bigramRep = 0;
   for (let i = 3; i < tokens.length; i++) {
     if (tokens[i] === tokens[i - 2] && tokens[i - 1] === tokens[i - 3]) bigramRep++;
@@ -86,13 +100,6 @@ function repetitionRate(tokens) {
   return Math.min(1, (rep + bigramRep) / Math.max(1, tokens.length - 1));
 }
 
-/**
- * Sentence-complexity proxy (Fraser 2016). Real syntactic parsing is
- * expensive in the browser, so we use two robust surface features:
- *   - mean utterance length (longer sentences => richer syntax)
- *   - subordinator density (because, although, when, etc.)
- * Returns a 0-100 score.
- */
 const SUBORDINATORS = new Set([
   "because", "although", "though", "while", "whereas", "since",
   "after", "before", "when", "whenever", "until", "unless",
@@ -104,18 +111,11 @@ function sentenceComplexityScore(text, tokens) {
   const mlu = meanLengthOfUtterance(text);
   const subs = tokens.filter((t) => SUBORDINATORS.has(t)).length;
   const subDensity = subs / tokens.length;
-  // MLU 12+ is rich, MLU < 5 is impoverished (Fraser 2016).
   const mluPart = Math.min(1, mlu / 12) * 70;
   const subPart = Math.min(1, subDensity / 0.05) * 30;
   return Math.round(mluPart + subPart);
 }
 
-/**
- * Speech speed in words per minute, given a duration in seconds.
- * Healthy adult conversational rate is ~140-180 WPM (Goldman-Eisler 1968).
- * < 100 WPM in connected speech is a flag for cognitive slowing
- * (Forbes-McKay 2005).
- */
 function wordsPerMinute(wordCount, durationSec) {
   if (!durationSec || durationSec < 0.1) return 0;
   return (wordCount / durationSec) * 60;
@@ -172,7 +172,6 @@ export function countAnimalsInTranscript(transcript) {
     "iguana","newt","salamander","jaguar","puma","lynx","cougar","leopard","panther","hyena",
   ]);
   const tokens = tokenize(transcript);
-  // Count UNIQUE animals named (avoid spam).
   const seen = new Set();
   for (const t of tokens) {
     if (list.has(t)) seen.add(t);
@@ -180,24 +179,34 @@ export function countAnimalsInTranscript(transcript) {
   return { unique_animals: seen.size, named: Array.from(seen) };
 }
 
+const RESTART_AFTER_END_MS = 420;
+const RETRY_ALREADY_STARTED_MS = 320;
+const NATIVE_START_TIMEOUT_MS = 2000;
+
 export function useSpeechCapture() {
   const Recog =
     typeof window !== "undefined"
       ? (window.SpeechRecognition || window.webkitSpeechRecognition)
       : null;
-  const [supported] = useState(Boolean(Recog));
+  const [supported] = useState(() => isBrowserSpeechRecognitionAvailable());
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
+  const [transcript, setTranscript] = useState("");
   const [error, setError] = useState(null);
+  const [softHint, setSoftHint] = useState(null);
   const [activeTaskId, setActiveTaskId] = useState(null);
+  const activeTaskIdRef = useRef(null);
 
   const recogRef = useRef(null);
   const finalRef = useRef("");
+  const interimRef = useRef("");
   const wantListeningRef = useRef(false);
-  /** Single pending start after stop/onend — avoids "recognition has already started". */
   const startTimerRef = useRef(null);
+  const manualStopRef = useRef(false);
+  const nativeActiveRef = useRef(false);
+  /** Resolves when the native engine fires onstart (or rejects on timeout / fatal). */
+  const nativeStartGateRef = useRef(null);
 
-  // Timing instrumentation for WPM + pause-duration features.
   const startTimeRef = useRef(0);
   const lastSpeechAtRef = useRef(0);
   const pauseTotalRef = useRef(0);
@@ -211,9 +220,59 @@ export function useSpeechCapture() {
     }
   }, []);
 
-  /**
-   * Exactly one delayed start — coalesces onend restarts + user "mic on" taps.
-   */
+  const closeNativeStartGate = useCallback((outcome) => {
+    const g = nativeStartGateRef.current;
+    if (!g) return;
+    clearTimeout(g.timer);
+    nativeStartGateRef.current = null;
+    try {
+      if (outcome?.ok) g.resolve();
+      else g.reject(outcome);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const disposeRecognizer = useCallback(() => {
+    clearStartTimer();
+    const r = recogRef.current;
+    recogRef.current = null;
+    nativeActiveRef.current = false;
+    if (!r) return;
+    try {
+      r.onresult = null;
+      r.onerror = null;
+      r.onend = null;
+      r.onstart = null;
+      r.onnomatch = null;
+    } catch {
+      /* ignore */
+    }
+    try {
+      r.abort?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      r.stop();
+    } catch {
+      /* ignore */
+    }
+  }, [clearStartTimer]);
+
+  const shutdownFromFatalSpeechError = useCallback(
+    (code) => {
+      wantListeningRef.current = false;
+      clearStartTimer();
+      setListening(false);
+      setSoftHint(null);
+      setError(code);
+      closeNativeStartGate({ ok: false, reason: "fatal", code });
+      disposeRecognizer();
+    },
+    [clearStartTimer, closeNativeStartGate, disposeRecognizer]
+  );
+
   const scheduleStart = useCallback(
     (delayMs = 60) => {
       clearStartTimer();
@@ -223,9 +282,11 @@ export function useSpeechCapture() {
         if (!r || !wantListeningRef.current) return;
         try {
           r.start();
+          devSpeechLog("recognition.start() ok");
         } catch (e) {
           const msg = String(e?.message || e || "");
           if (/already started|already running/i.test(msg)) {
+            devSpeechLog("recognition start: already running, retry after stop");
             try {
               r.stop();
             } catch {
@@ -240,140 +301,284 @@ export function useSpeechCapture() {
               if (!wantListeningRef.current) return;
               try {
                 r.start();
+                devSpeechLog("recognition.start() retry ok");
               } catch (e2) {
+                devSpeechLog("recognition.start() retry failed", e2);
+                wantListeningRef.current = false;
                 setError(String(e2?.message || e2));
                 setListening(false);
+                nativeActiveRef.current = false;
+                closeNativeStartGate({ ok: false, reason: "start-failed", message: String(e2?.message || e2) });
               }
-            }, 140);
+            }, RETRY_ALREADY_STARTED_MS);
             return;
           }
+          devSpeechLog("recognition.start() failed", e);
+          wantListeningRef.current = false;
           setError(msg || "speech-start-failed");
           setListening(false);
+          nativeActiveRef.current = false;
+          closeNativeStartGate({ ok: false, reason: "start-failed", message: msg || "speech-start-failed" });
         }
       }, delayMs);
     },
-    [clearStartTimer]
+    [clearStartTimer, closeNativeStartGate]
   );
 
-  const ensureRecognizer = useCallback(() => {
-    if (!Recog) return null;
-    if (recogRef.current) return recogRef.current;
-    const r = new Recog();
-    r.continuous = true;
-    r.interimResults = true;
-    r.lang = "en-US";
-    r.onstart = () => {
-      setListening(true);
-      setError(null);
-    };
-    r.onresult = (e) => {
-      const now = performance.now();
-      const lastT = lastSpeechAtRef.current || now;
-      const gap = now - lastT;
-      if (gap > LONG_PAUSE_MS && lastSpeechAtRef.current !== 0) {
-        pauseTotalRef.current += gap;
-        longPauseCountRef.current += 1;
+  const wireRecognizer = useCallback(
+    (r) => {
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = SPEECH_RECOGNITION_LANG;
+      try {
+        r.maxAlternatives = 1;
+      } catch {
+        /* optional */
       }
-      lastSpeechAtRef.current = now;
+      r.onstart = () => {
+        nativeActiveRef.current = true;
+        setListening(true);
+        setError(null);
+        setSoftHint(null);
+        closeNativeStartGate({ ok: true });
+        devSpeechLog("onstart");
+      };
+      r.onresult = (e) => {
+        setSoftHint(null);
+        const now = performance.now();
+        const lastT = lastSpeechAtRef.current || now;
+        const gap = now - lastT;
+        if (gap > LONG_PAUSE_MS && lastSpeechAtRef.current !== 0) {
+          pauseTotalRef.current += gap;
+          longPauseCountRef.current += 1;
+        }
+        lastSpeechAtRef.current = now;
 
-      let final = "";
-      let inter = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final += " " + t;
-        else inter += " " + t;
-      }
-      if (final) finalRef.current = (finalRef.current + " " + final).trim();
-      setInterim(inter.trim());
-    };
-    r.onerror = (e) => {
-      const code = e?.error || "speech-error";
-      // no-speech and audio-capture are recoverable - keep listening.
-      if (code === "no-speech" || code === "audio-capture" || code === "aborted" || code === "network") {
-        // onend will follow; restart logic in onend handles it.
-        return;
-      }
-      setError(code);
-    };
-    r.onend = () => {
-      if (wantListeningRef.current) {
-        scheduleStart(70);
-      } else {
+        let newFinal = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const piece = e.results[i]?.[0]?.transcript ?? "";
+          if (e.results[i].isFinal) newFinal += ` ${piece}`;
+        }
+        if (newFinal.trim()) {
+          finalRef.current = `${finalRef.current} ${newFinal}`.trim();
+        }
+        let liveInterim = "";
+        for (let i = e.results.length - 1; i >= 0; i--) {
+          if (!e.results[i].isFinal) {
+            liveInterim = (e.results[i]?.[0]?.transcript ?? "").trim();
+            break;
+          }
+        }
+        interimRef.current = liveInterim;
+        setInterim(liveInterim);
+        const liveFull = [finalRef.current, liveInterim].filter(Boolean).join(" ").trim();
+        setTranscript(liveFull);
+        if (isDev) {
+          const preview = liveFull.slice(0, 120);
+          if (preview) devSpeechLog("onresult", preview);
+        }
+      };
+      r.onerror = (ev) => {
+        const code = ev?.error || "speech-error";
+        devSpeechLog("onerror", code);
+        if (code === "aborted") {
+          if (manualStopRef.current) {
+            devSpeechLog("onerror aborted: ignored (manual stop)");
+            return;
+          }
+          wantListeningRef.current = false;
+          clearStartTimer();
+          setError("aborted");
+          setListening(false);
+          closeNativeStartGate({ ok: false, reason: "aborted" });
+          return;
+        }
+        if (code === "no-speech") {
+          setSoftHint("no-speech");
+          return;
+        }
+        if (FATAL_SPEECH_RECOGNITION_ERRORS.has(code)) {
+          shutdownFromFatalSpeechError(code);
+          return;
+        }
+        setError(code);
+      };
+      r.onnomatch = () => {
+        devSpeechLog("onnomatch");
+      };
+      r.onend = () => {
+        nativeActiveRef.current = false;
+        devSpeechLog("onend", { want: wantListeningRef.current });
+        if (!wantListeningRef.current) {
+          setListening(false);
+          return;
+        }
         setListening(false);
-      }
-    };
-    recogRef.current = r;
-    return r;
-  }, [Recog, scheduleStart]);
+        scheduleStart(RESTART_AFTER_END_MS);
+        devSpeechLog("schedule restart", RESTART_AFTER_END_MS);
+      };
+    },
+    [scheduleStart, shutdownFromFatalSpeechError, clearStartTimer, closeNativeStartGate]
+  );
 
   const start = useCallback(
-    (taskId = null) => {
-      if (!Recog) return false;
+    async (taskId = null) => {
+      devSpeechLog("start() begin", { taskId, supported: Boolean(Recog) });
+      if (!Recog) {
+        return {
+          ok: false,
+          error: "Voice input is supported only in Chrome or Edge.",
+        };
+      }
+      manualStopRef.current = false;
+      stopSpeaking();
+      await waitMs(120);
+      await waitForSpeechSynthesisIdle(8000);
+      if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
+        devSpeechLog("TTS still speaking after idle wait — extra 200ms");
+        await waitMs(200);
+      }
+      const prime = await primeMicrophoneForRecognition();
+      if (!prime.ok) {
+        const msg = prime.message || "Microphone permission was denied or unavailable.";
+        setError(msg);
+        setListening(false);
+        devSpeechLog("start() aborted: mic prime failed", prime);
+        return { ok: false, error: msg };
+      }
+
+      wantListeningRef.current = false;
+      closeNativeStartGate({ ok: false, reason: "superseded" });
+      disposeRecognizer();
       clearStartTimer();
       setError(null);
+      setSoftHint(null);
       finalRef.current = "";
+      interimRef.current = "";
       setInterim("");
+      setTranscript("");
+      activeTaskIdRef.current = taskId;
       setActiveTaskId(taskId);
       startTimeRef.current = performance.now();
       lastSpeechAtRef.current = 0;
       pauseTotalRef.current = 0;
       longPauseCountRef.current = 0;
-      const r = ensureRecognizer();
-      if (!r) return false;
+
+      const nativeReady = new Promise((resolve, reject) => {
+        nativeStartGateRef.current = {
+          resolve: () => resolve(),
+          reject: (v) => reject(v),
+          timer: setTimeout(() => {
+            wantListeningRef.current = false;
+            clearStartTimer();
+            disposeRecognizer();
+            setListening(false);
+            closeNativeStartGate({ ok: false, reason: "timeout" });
+          }, NATIVE_START_TIMEOUT_MS),
+        };
+      });
+
+      const r = new Recog();
+      wireRecognizer(r);
+      recogRef.current = r;
       wantListeningRef.current = true;
+      scheduleStart(300);
+      devSpeechLog("start() scheduled first native start");
+
       try {
-        r.stop();
-      } catch {
-        try {
-          r.abort?.();
-        } catch {
-          /* ignore */
+        await nativeReady;
+      } catch (reason) {
+        if (reason?.reason === "timeout") {
+          const msg = "Speech recognition did not start.";
+          setError(msg);
+          devSpeechLog("start() failed: native onstart timeout");
+          return { ok: false, error: msg };
         }
+        if (reason?.reason === "superseded") {
+          return { ok: false, error: "Speech recognition did not start." };
+        }
+        if (reason?.reason === "fatal" && reason.code) {
+          const msg = speechRecognitionErrorMessage(reason.code);
+          devSpeechLog("start() failed: fatal before/during onstart", reason.code);
+          return { ok: false, error: msg };
+        }
+        if (reason?.reason === "start-failed") {
+          const msg = reason.message || "Speech recognition did not start.";
+          return { ok: false, error: msg };
+        }
+        if (reason?.reason === "aborted") {
+          return { ok: false, error: "Speech recognition was interrupted." };
+        }
+        if (reason?.reason === "stop" || reason?.reason === "unmount") {
+          return { ok: false, error: "Speech recognition did not start." };
+        }
+        const msg = "Speech recognition did not start.";
+        return { ok: false, error: msg };
       }
-      scheduleStart(50);
-      return true;
+
+      return { ok: true };
     },
-    [Recog, ensureRecognizer, scheduleStart, clearStartTimer]
+    [Recog, disposeRecognizer, wireRecognizer, scheduleStart, clearStartTimer, closeNativeStartGate]
   );
 
   const stop = useCallback(() => {
-    clearStartTimer();
+    manualStopRef.current = true;
     wantListeningRef.current = false;
+    clearStartTimer();
+    closeNativeStartGate({ ok: false, reason: "stop" });
+    devSpeechLog("stop()");
     try {
       recogRef.current?.stop();
-    } catch {}
+    } catch {
+      /* ignore */
+    }
     setListening(false);
-    const transcript = (finalRef.current + " " + interim).trim();
+    setSoftHint(null);
+    const tail = (interimRef.current || "").trim();
+    if (tail) {
+      finalRef.current = `${finalRef.current} ${tail}`.trim();
+      interimRef.current = "";
+      setInterim("");
+    }
+    disposeRecognizer();
+    const text = (finalRef.current || "").trim();
+    setTranscript(text);
     const durationSec =
       startTimeRef.current > 0
         ? (performance.now() - startTimeRef.current) / 1000
         : 0;
-    const sample = analyzeTranscript(transcript, {
+    const sample = analyzeTranscript(text, {
       durationSec,
       pauseTotalMs: Math.round(pauseTotalRef.current),
       pauseLongCount: longPauseCountRef.current,
     });
-    sample.questionId = activeTaskId;
+    sample.questionId = activeTaskIdRef.current;
+    setTimeout(() => {
+      manualStopRef.current = false;
+    }, 400);
     return sample;
-  }, [interim, activeTaskId, clearStartTimer]);
+  }, [clearStartTimer, disposeRecognizer, closeNativeStartGate]);
 
-  // Cleanup on unmount.
   useEffect(() => {
+    devSpeechLog("hook mount", {
+      supported: Boolean(Recog),
+      secureContext: typeof window !== "undefined" ? window.isSecureContext : null,
+    });
     return () => {
-      clearStartTimer();
       wantListeningRef.current = false;
-      try {
-        recogRef.current?.stop();
-      } catch {}
-      recogRef.current = null;
+      manualStopRef.current = true;
+      closeNativeStartGate({ ok: false, reason: "unmount" });
+      disposeRecognizer();
     };
-  }, [clearStartTimer]);
+  }, [disposeRecognizer, Recog, closeNativeStartGate]);
 
   return {
     supported,
     listening,
     interim,
+    transcript,
     error,
+    softHint,
     activeTaskId,
     start,
     stop,
