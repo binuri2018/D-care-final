@@ -13,6 +13,7 @@ import { Toaster } from "react-hot-toast";
 import { subscribeToReminders } from "./firebase/reminders";
 import { useReminderChecker } from "./hooks/useReminderChecker";
 import { useOutdoorAckSync } from "./hooks/useOutdoorAckSync";
+import HomeDashboard from "./pages/HomeDashboard";
 import Reminders from "./pages/Reminders";
 import Analytics from "./pages/Analytics";
 import MemoryAid from "./pages/MemoryAid";
@@ -63,6 +64,9 @@ function Layout({
 
         <div className="nav-links">
           <NavLink to="/" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`} end>
+            <span>🏠</span> Home
+          </NavLink>
+          <NavLink to="/reminders" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
             <span>🔔</span> Reminders
           </NavLink>
           <NavLink to="/analytics" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
@@ -208,8 +212,9 @@ export default function App() {
             />
           }
         >
+          <Route index element={<HomeDashboard />} />
           <Route
-            index
+            path="reminders"
             element={
               <Reminders
                 reminders={reminders}

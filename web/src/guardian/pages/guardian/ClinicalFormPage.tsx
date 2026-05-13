@@ -76,6 +76,18 @@ export function ClinicalFormPage() {
       <Typography variant="body2" color="text.secondary">
         Same fields as the mobile clinical assessment.
       </Typography>
+      <Box>
+        <Button
+          component="a"
+          href="https://euphonious-kitten-841b8e.netlify.app/"
+          target="_blank"
+          rel="noopener noreferrer"
+          variant="outlined"
+          size="medium"
+        >
+          MMSE — Cognitive check-in
+        </Button>
+      </Box>
       {status && (
         <Alert severity={status.startsWith('Submitted') ? 'success' : 'error'} sx={{ whiteSpace: 'pre-wrap' }}>
           {status}
